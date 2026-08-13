@@ -8,7 +8,7 @@ import { FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, Scro
 import Svg, { Line, Path, Rect, Text as SvgText } from "react-native-svg";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { appendFormulaDraftToken } from "@/lib/formula-editor";
+import { appendFormulaDraftToken, buildRelativeFormula, getRelativeFormulaReferences, type RelativeFormulaPreset } from "@/lib/formula-editor";
 import { displayCellValue } from "@/lib/formula-engine";
 import {
   createEmptySheet,
@@ -114,6 +114,8 @@ export default function HomeScreen() {
   const columns = useMemo(() => Array.from({ length: activeSheet.columnCount }, (_, index) => columnLabel(index)), [activeSheet.columnCount]);
   const rows = useMemo(() => Array.from({ length: activeSheet.rowCount }, (_, index) => index + 1), [activeSheet.rowCount]);
   const selectedFormat = activeSheet.cellFormats[selectedCell] ?? {};
+  const formulaReferences = useMemo(() => getRelativeFormulaReferences(selectedCell), [selectedCell]);
+  const additionFormula = useMemo(() => buildRelativeFormula(selectedCell, "add"), [selectedCell]);
   const rangeSummary = useMemo(() => (selectionRange ? rangeNumericSummary(activeSheet, selectionRange) : null), [activeSheet, selectionRange]);
   const chartData = useMemo(() => {
     if (!selectionRange) return [];
@@ -286,9 +288,10 @@ export default function HomeScreen() {
     setSavedMessage(`تم فتح ${sheet.name}`);
   }
 
-  function insertFormula(template: string, label: string) {
-    setDraft(template);
-    setSavedMessage(`أُدرجت صيغة ${label}؛ عدّل مراجع الخلايا ثم اضغط التأكيد`);
+  function insertRelativeFormula(preset: RelativeFormulaPreset, label: string) {
+    const formula = buildRelativeFormula(selectedCell, preset);
+    setDraft(formula);
+    setSavedMessage(`أُدرجت صيغة ${label} للصف ${formulaReferences.row} في ${selectedCell}`);
   }
 
   function appendFormulaToken(token: string) {
@@ -513,29 +516,29 @@ export default function HomeScreen() {
         )}
 
         <View style={styles.formulaCard}>
-          <View style={styles.formulaMeta}><View style={styles.addressBadge}><Text style={styles.addressText}>{selectedCell}</Text></View><Text style={styles.formulaLabel}>شريط الصيغ</Text></View>
+          <View style={styles.formulaMeta}><View style={styles.addressBadge}><Text style={styles.addressText}>{selectedCell}</Text></View><Text style={styles.formulaLabel}>تحرير الخلية النشطة</Text></View>
           <View style={styles.editorRow}>
             <TextInput accessibilityLabel="محرر الخلية" value={draft} onChangeText={setDraft} onFocus={keepFormulaVisible} onSubmitEditing={saveCell} placeholder="اكتب =B2+C2 أو قيمة" placeholderTextColor="#8B99AE" style={styles.formulaInput} textAlign="right" returnKeyType="done" autoCapitalize="characters" />
             <Pressable accessibilityLabel="تأكيد تعديل الخلية" onPress={saveCell} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}><MaterialIcons name="check" size={20} color="#FFFFFF" /></Pressable>
           </View>
           <View style={styles.formulaHintRow}>
-            <Text style={styles.formulaHintText}>مثال سريع: <Text style={styles.formulaExample}>=B2+C2</Text> لحساب درجتين</Text>
+            <Text style={styles.formulaHintText}>صيغة الصف {formulaReferences.row}: <Text style={styles.formulaExample}>{additionFormula}</Text></Text>
             <Pressable onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.formulaHelpButton, pressed && styles.toolPressed]}><MaterialIcons name="help-outline" size={15} color="#2457E5" /><Text style={styles.formulaHelpText}>شرح</Text></Pressable>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.tokenToolsRow}>
-            <Pressable onPress={() => appendFormulaToken("B2")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>B2</Text></Pressable>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.formulaToolsScroller} contentContainerStyle={styles.tokenToolsRow}>
+            <Pressable accessibilityLabel={`إدراج ${formulaReferences.firstReference}`} onPress={() => appendFormulaToken(formulaReferences.firstReference)} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>{formulaReferences.firstReference}</Text></Pressable>
             <Pressable onPress={() => appendFormulaToken("+")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.symbolToken}>+</Text></Pressable>
-            <Pressable onPress={() => appendFormulaToken("C2")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>C2</Text></Pressable>
-            <Pressable onPress={() => insertFormula("=B2+C2", "جمع درجتين")} style={({ pressed }) => [styles.exampleTokenTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={16} color="#FFFFFF" /><Text style={styles.exampleTokenText}>=B2+C2</Text></Pressable>
+            <Pressable accessibilityLabel={`إدراج ${formulaReferences.secondReference}`} onPress={() => appendFormulaToken(formulaReferences.secondReference)} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>{formulaReferences.secondReference}</Text></Pressable>
+            <Pressable accessibilityLabel={`إدراج صيغة الجمع ${additionFormula}`} onPress={() => insertRelativeFormula("add", "جمع درجتين")} style={({ pressed }) => [styles.exampleTokenTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={16} color="#FFFFFF" /><Text style={styles.exampleTokenText}>{additionFormula}</Text></Pressable>
             <Pressable onPress={() => appendFormulaToken("SUM(")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>Σ</Text></Pressable>
           </ScrollView>
-          <View style={styles.suggestionsHeader}><MaterialIcons name="auto-awesome" size={15} color="#2457E5" /><Text style={styles.suggestionsLabel}>دوال جاهزة</Text></View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.formulaToolsRow}>
-            <Pressable onPress={() => insertFormula("=B2-C2", "الطرح")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>−</Text><Text style={styles.formulaToolText}>طرح</Text></Pressable>
-            <Pressable onPress={() => insertFormula("=B2*C2", "الضرب")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>×</Text><Text style={styles.formulaToolText}>ضرب</Text></Pressable>
-            <Pressable onPress={() => insertFormula("=B2/C2", "القسمة")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>÷</Text><Text style={styles.formulaToolText}>قسمة</Text></Pressable>
-            <Pressable onPress={() => insertFormula("=SUM(B2:B6)", "SUM")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>SUM</Text></Pressable>
-            <Pressable onPress={() => insertFormula("=AVERAGE(B2:B6)", "AVERAGE")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>متوسط</Text></Pressable>
+          <View style={styles.suggestionsHeader}><View style={styles.suggestionsTitle}><MaterialIcons name="auto-awesome" size={15} color="#2457E5" /><Text style={styles.suggestionsLabel}>دوال جاهزة</Text></View><View style={styles.swipeHint}><MaterialIcons name="swipe" size={14} color="#64748B" /><Text style={styles.swipeHintText}>اسحب للمزيد</Text></View></View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.formulaToolsScroller} contentContainerStyle={styles.formulaToolsRow}>
+            <Pressable onPress={() => insertRelativeFormula("subtract", "الطرح")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>−</Text><Text style={styles.formulaToolText}>طرح</Text></Pressable>
+            <Pressable onPress={() => insertRelativeFormula("multiply", "الضرب")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>×</Text><Text style={styles.formulaToolText}>ضرب</Text></Pressable>
+            <Pressable onPress={() => insertRelativeFormula("divide", "القسمة")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>÷</Text><Text style={styles.formulaToolText}>قسمة</Text></Pressable>
+            <Pressable onPress={() => insertRelativeFormula("sum", "SUM")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>SUM</Text></Pressable>
+            <Pressable onPress={() => insertRelativeFormula("average", "AVERAGE")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>متوسط</Text></Pressable>
           </ScrollView>
         </View>
 
@@ -544,7 +547,7 @@ export default function HomeScreen() {
             <View style={styles.guideHeading}><View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View><View><Text style={styles.guideTitle}>كيف أحسب مجموع درجتين؟</Text><Text style={styles.guideSubtitle}>أحمد محمد: ٥ + ٥ = 10</Text></View></View>
             <MaterialIcons name={showGuide ? "expand-less" : "expand-more"} size={22} color="#2457E5" />
           </Pressable>
-          {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. اكتب الاسم في A2، ثم اكتب ٥ في B2 و٥ في C2.</Text><Text style={styles.guideStep}>٢. اختر D2، واكتب <Text style={styles.formulaExample}>=B2+C2</Text> ثم اضغط ✓.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>النتيجة: <Text style={styles.guideResultValue}>10</Text></Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
+          {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. في الصف {formulaReferences.row} اكتب الدرجتين في {formulaReferences.firstReference} و{formulaReferences.secondReference}.</Text><Text style={styles.guideStep}>٢. اترك الخلية {selectedCell} محددة، واكتب <Text style={styles.formulaExample}>{additionFormula}</Text> ثم اضغط ✓.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>المثال الجاهز: <Text style={styles.guideResultValue}>٥ + ٥ = 10</Text></Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
         </View>
 
         <View style={styles.searchCard}>
@@ -652,15 +655,19 @@ const styles = StyleSheet.create({
   formulaHintText: { flex: 1, color: "#64748B", fontSize: 11, fontWeight: "600", textAlign: "right" },
   formulaHelpButton: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 8, backgroundColor: "#EAF0FF" },
   formulaHelpText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
-  tokenToolsRow: { flexDirection: "row-reverse", gap: 6, paddingTop: 8 },
+  formulaToolsScroller: { marginHorizontal: -2 },
+  tokenToolsRow: { flexDirection: "row-reverse", gap: 6, paddingHorizontal: 2, paddingTop: 8, paddingBottom: 2 },
   tokenTool: { minWidth: 39, alignItems: "center", justifyContent: "center", paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#DDE6F5" },
   tokenText: { color: "#2457E5", fontSize: 13, fontWeight: "900" },
   symbolToken: { color: "#2457E5", fontSize: 18, fontWeight: "900", lineHeight: 18 },
   exampleTokenTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 9, backgroundColor: "#2457E5" },
   exampleTokenText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
-  suggestionsHeader: { flexDirection: "row-reverse", alignItems: "center", gap: 4, marginTop: 9 },
+  suggestionsHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginTop: 9 },
+  suggestionsTitle: { flexDirection: "row-reverse", alignItems: "center", gap: 4 },
   suggestionsLabel: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
-  formulaToolsRow: { flexDirection: "row-reverse", gap: 7, paddingTop: 6 },
+  swipeHint: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 6, backgroundColor: "#F5F7FC" },
+  swipeHintText: { color: "#64748B", fontSize: 9, fontWeight: "700" },
+  formulaToolsRow: { flexDirection: "row-reverse", gap: 7, paddingHorizontal: 2, paddingTop: 6, paddingBottom: 2 },
   formulaTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#EAF0FF", borderWidth: 1, borderColor: "#D8E2FF" },
   formulaToolText: { color: "#2457E5", fontSize: 11, fontWeight: "800" },
   sigmaText: { color: "#2457E5", fontSize: 16, fontWeight: "900", lineHeight: 17 },
@@ -713,7 +720,7 @@ const styles = StyleSheet.create({
   rowHeaderText: { color: "#708098", fontSize: 11, fontWeight: "700" },
   cell: { width: DEFAULT_COLUMN_WIDTH, height: 42, paddingHorizontal: 7, alignItems: "flex-end", justifyContent: "center", backgroundColor: "#FFFFFF", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
   rangeCell: { backgroundColor: "#EAF0FF", borderColor: "#8EACFF" },
-  selectedCell: { borderWidth: 2, borderColor: "#2457E5", marginLeft: -1, marginTop: -1 },
+  selectedCell: { backgroundColor: "#EAF0FF", borderWidth: 2, borderColor: "#2457E5", marginLeft: -1, marginTop: -1, elevation: 2 },
   cellPressed: { opacity: 0.72 },
   cellText: { width: "100%", color: "#24344F", fontSize: 12, fontWeight: "600", textAlign: "right" },
   selectedCellText: { color: "#1D4ED8" },
