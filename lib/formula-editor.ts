@@ -8,7 +8,7 @@ type FormulaReferences = {
 
 function formulaRowForAddress(address: string) {
   const match = address.trim().toUpperCase().match(/^[A-Z]+([1-9]\d*)$/);
-  return Math.max(2, Number(match?.[1] ?? 2));
+  return Number(match?.[1] ?? 1);
 }
 
 function isCellReference(token: string) {

@@ -31,6 +31,11 @@ describe("appendFormulaDraftToken", () => {
     expect(displayCellValue("D3", cells)).toBe("16");
   });
 
+  it("يبني مراجع الصف الأول عند تحرير خلية في هذا الصف", () => {
+    expect(getRelativeFormulaReferences("D1")).toEqual({ row: 1, firstReference: "B1", secondReference: "C1" });
+    expect(buildRelativeFormula("D1", "add")).toBe("=B1+C1");
+  });
+
   it("لا يلحق مرجعاً جديداً بصيغة مكتملة بشكل غير صالح", () => {
     expect(appendFormulaDraftToken("=B2+C2", "B3")).toBe("=B3");
     expect(appendFormulaDraftToken("=B3", "+")).toBe("=B3+");

@@ -37,6 +37,14 @@ import { exportSheetToCsv, exportWorkbookToXlsx, importSpreadsheetFile } from "@
 const WORKBOOK_KEY = "jadwali.workbook.v1";
 const FORMAT_OPTIONS: CellNumberFormat[] = ["general", "currency", "percent", "decimal"];
 const COLOR_OPTIONS = ["#FFFFFF", "#FFF7D6", "#E8F7F0", "#E9EEFF", "#FDECEC"];
+const TOOLBAR_SECTIONS = [
+  { id: "file", label: "ملف", icon: "folder" },
+  { id: "edit", label: "تحرير", icon: "edit" },
+  { id: "formulas", label: "صيغ", icon: "functions" },
+  { id: "table", label: "جدول", icon: "table-view" },
+  { id: "analysis", label: "تحليل", icon: "insert-chart-outlined" },
+] as const;
+type ToolbarSection = (typeof TOOLBAR_SECTIONS)[number]["id"];
 
 function safeFileName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").slice(0, 40) || "jadwali";
@@ -97,6 +105,8 @@ export default function HomeScreen() {
   const [showFormatting, setShowFormatting] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showCharts, setShowCharts] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [activeToolbarSection, setActiveToolbarSection] = useState<ToolbarSection>("formulas");
   const [chartType, setChartType] = useState<"bar" | "line">("bar");
   const [isRangeSelecting, setIsRangeSelecting] = useState(false);
   const [selectionRange, setSelectionRange] = useState<CellRange | null>(null);
@@ -214,6 +224,14 @@ export default function HomeScreen() {
     }));
   }
 
+  function selectToolbarSection(section: ToolbarSection) {
+    setActiveToolbarSection(section);
+    if (section !== "file") setShowTemplates(false);
+    if (section !== "edit") setShowSearch(false);
+    if (section !== "table") setShowFormatting(false);
+    if (section !== "analysis") setShowCharts(false);
+  }
+
   function revealCell(address: string) {
     const destination = parseAddress(address);
     if (!destination) return;
@@ -288,10 +306,11 @@ export default function HomeScreen() {
     setSavedMessage(`تم فتح ${sheet.name}`);
   }
 
-  function insertRelativeFormula(preset: RelativeFormulaPreset, label: string) {
+  function applyRelativeFormula(preset: RelativeFormulaPreset, label: string) {
     const formula = buildRelativeFormula(selectedCell, preset);
     setDraft(formula);
-    setSavedMessage(`أُدرجت صيغة ${label} للصف ${formulaReferences.row} في ${selectedCell}`);
+    updateActiveSheet((sheet) => ({ ...sheet, cells: { ...sheet.cells, [selectedCell]: formula } }));
+    setSavedMessage(`تم تطبيق ${label} للصف ${formulaReferences.row} في ${selectedCell}`);
   }
 
   function appendFormulaToken(token: string) {
@@ -496,11 +515,50 @@ export default function HomeScreen() {
           <View style={styles.headerBadge}><View style={styles.headerBadgeDot} /><Text style={styles.headerBadgeText}>{hasLoaded ? "محفوظ محلياً" : "جارٍ التحميل"}</Text></View>
         </View>
 
-        <View style={styles.quickActionsRow}>
-          <Pressable onPress={() => setShowTemplates((visible) => !visible)} style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]}><MaterialIcons name="dashboard-customize" size={17} color="#FFFFFF" /><Text style={styles.primaryActionText}>قوالب</Text></Pressable>
-          <Pressable onPress={importFile} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="file-upload" size={17} color="#2457E5" /><Text style={styles.utilityActionText}>استيراد</Text></Pressable>
-          <Pressable onPress={() => exportFile("csv")} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="download" size={17} color="#16865B" /><Text style={[styles.utilityActionText, styles.csvActionText]}>CSV</Text></Pressable>
-          <Pressable onPress={() => exportFile("xlsx")} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="table-view" size={17} color="#2457E5" /><Text style={styles.utilityActionText}>Excel</Text></Pressable>
+        <View style={styles.toolbarCard}>
+          <View style={styles.toolbarIntro}><Text style={styles.toolbarTitle}>أدوات الجدول</Text><Text style={styles.toolbarHint}>اختر عنواناً لعرض أدواته</Text></View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.primaryToolbarRow}>
+            {TOOLBAR_SECTIONS.map((section) => <Pressable key={section.id} onPress={() => selectToolbarSection(section.id)} style={({ pressed }) => [styles.primaryToolbarButton, activeToolbarSection === section.id && styles.activePrimaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name={section.icon} size={17} color={activeToolbarSection === section.id ? "#FFFFFF" : "#2457E5"} /><Text style={[styles.primaryToolbarText, activeToolbarSection === section.id && styles.activePrimaryToolbarText]}>{section.label}</Text></Pressable>)}
+          </ScrollView>
+          <View style={styles.toolbarDivider} />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.secondaryToolbarRow}>
+            {activeToolbarSection === "file" && <>
+              <Pressable onPress={() => setShowTemplates((visible) => !visible)} style={({ pressed }) => [styles.secondaryToolbarButton, showTemplates && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="dashboard-customize" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>قوالب</Text></Pressable>
+              <Pressable onPress={importFile} disabled={isFileAction} style={({ pressed }) => [styles.secondaryToolbarButton, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="file-upload" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>استيراد</Text></Pressable>
+              <Pressable onPress={() => exportFile("xlsx")} disabled={isFileAction} style={({ pressed }) => [styles.secondaryToolbarButton, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="table-view" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>Excel</Text></Pressable>
+              <Pressable onPress={() => exportFile("csv")} disabled={isFileAction} style={({ pressed }) => [styles.secondaryToolbarButton, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="download" size={17} color="#16865B" /><Text style={[styles.secondaryToolbarText, styles.csvActionText]}>CSV</Text></Pressable>
+            </>}
+            {activeToolbarSection === "edit" && <>
+              <Pressable onPress={undoLastChange} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="undo" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>تراجع</Text></Pressable>
+              <Pressable onPress={clearSelectedCell} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="backspace" size={17} color="#C24141" /><Text style={[styles.secondaryToolbarText, styles.clearText]}>مسح الخلية</Text></Pressable>
+              <Pressable onPress={() => setShowSearch((visible) => !visible)} style={({ pressed }) => [styles.secondaryToolbarButton, showSearch && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="search" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>بحث وانتقال</Text></Pressable>
+              <Pressable onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.secondaryToolbarButton, showGuide && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="help-outline" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>مساعدة</Text></Pressable>
+            </>}
+            {activeToolbarSection === "formulas" && <>
+              <Pressable onPress={() => appendFormulaToken(formulaReferences.firstReference)} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.referenceButtonText}>{formulaReferences.firstReference}</Text></Pressable>
+              <Pressable onPress={() => appendFormulaToken("+")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>+</Text></Pressable>
+              <Pressable onPress={() => appendFormulaToken(formulaReferences.secondReference)} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.referenceButtonText}>{formulaReferences.secondReference}</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("add", "جمع الدرجتين")} style={({ pressed }) => [styles.secondaryToolbarButton, styles.emphasizedFormulaButton, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#FFFFFF" /><Text style={styles.emphasizedFormulaText}>جمع</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("subtract", "الطرح")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>−</Text><Text style={styles.secondaryToolbarText}>طرح</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("multiply", "الضرب")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>×</Text><Text style={styles.secondaryToolbarText}>ضرب</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("divide", "القسمة")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>÷</Text><Text style={styles.secondaryToolbarText}>قسمة</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("sum", "SUM")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>Σ</Text><Text style={styles.secondaryToolbarText}>SUM</Text></Pressable>
+              <Pressable onPress={() => applyRelativeFormula("average", "المتوسط")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><Text style={styles.operatorText}>Σ</Text><Text style={styles.secondaryToolbarText}>متوسط</Text></Pressable>
+            </>}
+            {activeToolbarSection === "table" && <>
+              <Pressable onPress={startRangeSelection} style={({ pressed }) => [styles.secondaryToolbarButton, isRangeSelecting && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="select-all" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>نطاق</Text></Pressable>
+              <Pressable onPress={() => { setShowFormatting((visible) => !visible); }} style={({ pressed }) => [styles.secondaryToolbarButton, showFormatting && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="format-paint" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>تنسيق</Text></Pressable>
+              <Pressable onPress={() => changeTableSize("rowCount")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="view-agenda" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>صف</Text></Pressable>
+              <Pressable onPress={() => changeTableSize("columnCount")} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="view-column" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>عمود</Text></Pressable>
+              <Pressable onPress={mergeSelection} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="merge-type" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>دمج</Text></Pressable>
+            </>}
+            {activeToolbarSection === "analysis" && <>
+              <Pressable onPress={() => setShowCharts((visible) => !visible)} style={({ pressed }) => [styles.secondaryToolbarButton, showCharts && styles.activeSecondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="insert-chart-outlined" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>مخطط</Text></Pressable>
+              <Pressable onPress={unmergeSelection} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="vertical-split" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>إلغاء الدمج</Text></Pressable>
+              <Pressable onPress={() => adjustColumnWidth(-16)} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="unfold-less" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>أضيق</Text></Pressable>
+              <Pressable onPress={() => adjustColumnWidth(16)} style={({ pressed }) => [styles.secondaryToolbarButton, pressed && styles.toolPressed]}><MaterialIcons name="unfold-more" size={17} color="#2457E5" /><Text style={styles.secondaryToolbarText}>أوسع</Text></Pressable>
+            </>}
+          </ScrollView>
         </View>
 
         {showTemplates && (
@@ -522,56 +580,25 @@ export default function HomeScreen() {
             <Pressable accessibilityLabel="تأكيد تعديل الخلية" onPress={saveCell} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}><MaterialIcons name="check" size={20} color="#FFFFFF" /></Pressable>
           </View>
           <View style={styles.formulaHintRow}>
-            <Text style={styles.formulaHintText}>صيغة الصف {formulaReferences.row}: <Text style={styles.formulaExample}>{additionFormula}</Text></Text>
+            <Text style={styles.formulaHintText}>صف {formulaReferences.row} · جمع هذا الصف: <Text style={styles.formulaExample}>{additionFormula}</Text></Text>
             <Pressable onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.formulaHelpButton, pressed && styles.toolPressed]}><MaterialIcons name="help-outline" size={15} color="#2457E5" /><Text style={styles.formulaHelpText}>شرح</Text></Pressable>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.formulaToolsScroller} contentContainerStyle={styles.tokenToolsRow}>
-            <Pressable accessibilityLabel={`إدراج ${formulaReferences.firstReference}`} onPress={() => appendFormulaToken(formulaReferences.firstReference)} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>{formulaReferences.firstReference}</Text></Pressable>
-            <Pressable onPress={() => appendFormulaToken("+")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.symbolToken}>+</Text></Pressable>
-            <Pressable accessibilityLabel={`إدراج ${formulaReferences.secondReference}`} onPress={() => appendFormulaToken(formulaReferences.secondReference)} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>{formulaReferences.secondReference}</Text></Pressable>
-            <Pressable accessibilityLabel={`إدراج صيغة الجمع ${additionFormula}`} onPress={() => insertRelativeFormula("add", "جمع درجتين")} style={({ pressed }) => [styles.exampleTokenTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={16} color="#FFFFFF" /><Text style={styles.exampleTokenText}>{additionFormula}</Text></Pressable>
-            <Pressable onPress={() => appendFormulaToken("SUM(")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>Σ</Text></Pressable>
-          </ScrollView>
-          <View style={styles.suggestionsHeader}><View style={styles.suggestionsTitle}><MaterialIcons name="auto-awesome" size={15} color="#2457E5" /><Text style={styles.suggestionsLabel}>دوال جاهزة</Text></View><View style={styles.swipeHint}><MaterialIcons name="swipe" size={14} color="#64748B" /><Text style={styles.swipeHintText}>اسحب للمزيد</Text></View></View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.formulaToolsScroller} contentContainerStyle={styles.formulaToolsRow}>
-            <Pressable onPress={() => insertRelativeFormula("subtract", "الطرح")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>−</Text><Text style={styles.formulaToolText}>طرح</Text></Pressable>
-            <Pressable onPress={() => insertRelativeFormula("multiply", "الضرب")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>×</Text><Text style={styles.formulaToolText}>ضرب</Text></Pressable>
-            <Pressable onPress={() => insertRelativeFormula("divide", "القسمة")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>÷</Text><Text style={styles.formulaToolText}>قسمة</Text></Pressable>
-            <Pressable onPress={() => insertRelativeFormula("sum", "SUM")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>SUM</Text></Pressable>
-            <Pressable onPress={() => insertRelativeFormula("average", "AVERAGE")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>متوسط</Text></Pressable>
-          </ScrollView>
+          <Text style={styles.formulaWorkflow}>من شريط «صيغ»: اضغط الدالة لتطبيقها فوراً على {selectedCell}، أو استخدم المراجع لبناء صيغة يدوية ثم احفظها.</Text>
         </View>
 
         <View style={styles.guideCard}>
           <Pressable accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول" onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}>
-            <View style={styles.guideHeading}><View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View><View><Text style={styles.guideTitle}>كيف أحسب مجموع درجتين؟</Text><Text style={styles.guideSubtitle}>أحمد محمد: ٥ + ٥ = 10</Text></View></View>
+            <View style={styles.guideHeading}><View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View><View><Text style={styles.guideTitle}>كيف أحسب مجموع هذا الصف؟</Text><Text style={styles.guideSubtitle}>المراجع: {formulaReferences.firstReference} و{formulaReferences.secondReference}</Text></View></View>
             <MaterialIcons name={showGuide ? "expand-less" : "expand-more"} size={22} color="#2457E5" />
           </Pressable>
-          {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. في الصف {formulaReferences.row} اكتب الدرجتين في {formulaReferences.firstReference} و{formulaReferences.secondReference}.</Text><Text style={styles.guideStep}>٢. اترك الخلية {selectedCell} محددة، واكتب <Text style={styles.formulaExample}>{additionFormula}</Text> ثم اضغط ✓.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>المثال الجاهز: <Text style={styles.guideResultValue}>٥ + ٥ = 10</Text></Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
+          {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. في الصف {formulaReferences.row} اكتب القيم في {formulaReferences.firstReference} و{formulaReferences.secondReference}.</Text><Text style={styles.guideStep}>٢. حدّد خلية النتيجة {selectedCell}، ثم اختر «صيغ» واضغط «جمع» لتطبيق <Text style={styles.formulaExample}>{additionFormula}</Text>.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>لن تُستخدم مراجع أي صف آخر.</Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
         </View>
 
-        <View style={styles.searchCard}>
+        {showSearch && <View style={styles.searchCard}>
           <View style={styles.searchSection}><MaterialIcons name="my-location" size={17} color="#2457E5" /><TextInput value={goToValue} onChangeText={setGoToValue} onSubmitEditing={goToCell} placeholder="انتقل إلى D25" placeholderTextColor="#8B99AE" style={styles.searchInput} textAlign="right" autoCapitalize="characters" returnKeyType="go" /><Pressable onPress={goToCell} style={({ pressed }) => [styles.searchButton, pressed && styles.pressed]}><Text style={styles.searchButtonText}>انتقال</Text></Pressable></View>
           <View style={styles.searchDivider} />
           <View style={styles.searchSection}><MaterialIcons name="search" size={17} color="#2457E5" /><TextInput value={searchValue} onChangeText={setSearchValue} onSubmitEditing={findCellByText} placeholder="ابحث عن اسم" placeholderTextColor="#8B99AE" style={styles.searchInput} textAlign="right" returnKeyType="search" /><Pressable onPress={findCellByText} style={({ pressed }) => [styles.searchButton, pressed && styles.pressed]}><Text style={styles.searchButtonText}>بحث</Text></Pressable></View>
-        </View>
-
-        <View style={styles.toolsRow}>
-          <Pressable onPress={startRangeSelection} style={({ pressed }) => [styles.toolButton, isRangeSelecting && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="select-all" size={18} color="#2457E5" /><Text style={styles.toolText}>نطاق</Text></Pressable>
-          <Pressable onPress={() => setShowFormatting((visible) => !visible)} style={({ pressed }) => [styles.toolButton, showFormatting && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="format-paint" size={18} color="#2457E5" /><Text style={styles.toolText}>تنسيق</Text></Pressable>
-          <Pressable onPress={() => changeTableSize("columnCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="view-column" size={18} color="#2457E5" /><Text style={styles.toolText}>عمود</Text></Pressable>
-          <Pressable onPress={() => changeTableSize("rowCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="view-agenda" size={18} color="#2457E5" /><Text style={styles.toolText}>صف</Text></Pressable>
-          <Pressable onPress={clearSelectedCell} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="backspace" size={18} color="#C24141" /><Text style={[styles.toolText, styles.clearText]}>مسح</Text></Pressable>
-          <Pressable onPress={undoLastChange} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="undo" size={18} color="#2457E5" /><Text style={styles.toolText}>تراجع</Text></Pressable>
-        </View>
-
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.analysisToolsRow}>
-          <Pressable onPress={mergeSelection} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="merge-type" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>دمج</Text></Pressable>
-          <Pressable onPress={unmergeSelection} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="vertical-split" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>إلغاء الدمج</Text></Pressable>
-          <Pressable onPress={() => adjustColumnWidth(-16)} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="unfold-less" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>أضيق</Text></Pressable>
-          <Pressable onPress={() => adjustColumnWidth(16)} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="unfold-more" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>أوسع</Text></Pressable>
-          <Pressable onPress={() => setShowCharts((visible) => !visible)} style={({ pressed }) => [styles.analysisTool, showCharts && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="insert-chart-outlined" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>مخطط</Text></Pressable>
-        </ScrollView>
+        </View>}
 
         {showFormatting && <View style={styles.formatCard}><View style={styles.formatHeader}><Text style={styles.formatTitle}>تنسيق {selectedCell}</Text><Pressable onPress={clearCellFormat} style={({ pressed }) => [styles.clearFormatButton, pressed && styles.toolPressed]}><Text style={styles.clearFormatText}>إزالة التنسيق</Text></Pressable></View><Text style={styles.formatLabel}>عرض الرقم</Text><View style={styles.formatOptions}>{FORMAT_OPTIONS.map((format) => <Pressable key={format} onPress={() => updateCellFormat({ numberFormat: format })} style={({ pressed }) => [styles.formatChip, selectedFormat.numberFormat === format && styles.activeFormatChip, pressed && styles.toolPressed]}><Text style={[styles.formatChipText, selectedFormat.numberFormat === format && styles.activeFormatChipText]}>{formatLabel(format)}</Text></Pressable>)}</View><Text style={styles.formatLabel}>لون الخلفية</Text><View style={styles.colorOptions}>{COLOR_OPTIONS.map((color) => <Pressable key={color} accessibilityLabel={`تطبيق اللون ${color}`} onPress={() => updateCellFormat({ backgroundColor: color })} style={({ pressed }) => [styles.colorSwatch, { backgroundColor: color }, selectedFormat.backgroundColor === color && styles.activeColorSwatch, pressed && styles.toolPressed]}>{selectedFormat.backgroundColor === color && <MaterialIcons name="check" size={15} color="#2457E5" />}</Pressable>)}</View></View>}
 
@@ -610,11 +637,23 @@ const styles = StyleSheet.create({
   headerBadge: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 99, backgroundColor: "#E8F7F0" },
   headerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#16865B" },
   headerBadgeText: { color: "#16865B", fontSize: 11, fontWeight: "700" },
-  quickActionsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, marginBottom: 10 },
-  primaryAction: { flexDirection: "row-reverse", alignItems: "center", gap: 5, minHeight: 36, paddingHorizontal: 11, borderRadius: 10, backgroundColor: "#2457E5" },
-  primaryActionText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
-  utilityAction: { flexDirection: "row-reverse", alignItems: "center", gap: 4, minHeight: 36, paddingHorizontal: 9, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
-  utilityActionText: { color: "#2457E5", fontSize: 12, fontWeight: "800" },
+  toolbarCard: { marginBottom: 10, padding: 10, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5", elevation: 1 },
+  toolbarIntro: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  toolbarTitle: { color: "#13213A", fontSize: 13, fontWeight: "800" },
+  toolbarHint: { color: "#64748B", fontSize: 10, fontWeight: "600" },
+  primaryToolbarRow: { flexDirection: "row-reverse", gap: 6, paddingHorizontal: 1 },
+  primaryToolbarButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, minHeight: 35, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#E3EAF5" },
+  activePrimaryToolbarButton: { backgroundColor: "#2457E5", borderColor: "#2457E5" },
+  primaryToolbarText: { color: "#2457E5", fontSize: 11, fontWeight: "800" },
+  activePrimaryToolbarText: { color: "#FFFFFF" },
+  toolbarDivider: { height: 1, marginVertical: 9, backgroundColor: "#E8EDF6" },
+  secondaryToolbarRow: { flexDirection: "row-reverse", gap: 6, paddingHorizontal: 1 },
+  secondaryToolbarButton: { flexDirection: "row-reverse", alignItems: "center", gap: 4, minHeight: 33, paddingHorizontal: 9, borderRadius: 9, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  activeSecondaryToolbarButton: { backgroundColor: "#E9EEFF", borderColor: "#9AB4FF" },
+  secondaryToolbarText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  referenceButtonText: { color: "#2457E5", fontSize: 12, fontWeight: "900" },
+  emphasizedFormulaButton: { backgroundColor: "#2457E5", borderColor: "#2457E5" },
+  emphasizedFormulaText: { color: "#FFFFFF", fontSize: 10, fontWeight: "900" },
   csvActionText: { color: "#16865B" },
   templatesCard: { marginBottom: 10, padding: 12, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
   sectionTitle: { color: "#13213A", fontSize: 13, fontWeight: "800", textAlign: "right", marginBottom: 8 },
@@ -655,6 +694,7 @@ const styles = StyleSheet.create({
   formulaHintText: { flex: 1, color: "#64748B", fontSize: 11, fontWeight: "600", textAlign: "right" },
   formulaHelpButton: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 8, backgroundColor: "#EAF0FF" },
   formulaHelpText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  formulaWorkflow: { marginTop: 7, color: "#64748B", fontSize: 10, fontWeight: "600", lineHeight: 16, textAlign: "right" },
   formulaToolsScroller: { marginHorizontal: -2 },
   tokenToolsRow: { flexDirection: "row-reverse", gap: 6, paddingHorizontal: 2, paddingTop: 8, paddingBottom: 2 },
   tokenTool: { minWidth: 39, alignItems: "center", justifyContent: "center", paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#DDE6F5" },
