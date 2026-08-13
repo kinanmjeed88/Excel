@@ -1,14 +1,9 @@
 import * as XLSX from "xlsx";
 
 import { displayCellValue, type CellValues } from "./formula-engine";
+import { getColumnWidth, type SpreadsheetSheet } from "./spreadsheet-model";
 
-export type PortableSheet = {
-  id: string;
-  name: string;
-  cells: CellValues;
-  rowCount: number;
-  columnCount: number;
-};
+export type PortableSheet = SpreadsheetSheet;
 
 export type ImportSummary = {
   sheets: PortableSheet[];
@@ -63,6 +58,13 @@ function worksheetToPortableSheet(
       id: `imported-${Date.now()}-${sheetIndex}`,
       name: safeSheetName(sheetName, `ورقة ${sheetIndex + 1}`),
       cells,
+      cellFormats: {},
+      mergedCells: (worksheet["!merges"] ?? []).map((merge) => ({ start: XLSX.utils.encode_cell(merge.s), end: XLSX.utils.encode_cell(merge.e) })),
+      columnWidths: (worksheet["!cols"] ?? []).reduce<Record<string, number>>((widths, column, index) => {
+        const width = column?.wpx ?? (column?.wch ? column.wch * 8 : undefined);
+        if (width) widths[XLSX.utils.encode_col(index)] = width;
+        return widths;
+      }, {}),
       rowCount,
       columnCount,
     },
@@ -74,7 +76,7 @@ export function importSpreadsheetFile(fileName: string, contents: ArrayBuffer | 
   const isCsv = fileName.toLowerCase().endsWith(".csv");
   const workbook = isCsv
     ? XLSX.read(typeof contents === "string" ? contents : new TextDecoder().decode(contents), { type: "string", cellFormula: true })
-    : XLSX.read(contents, { type: "array", cellFormula: true });
+    : XLSX.read(contents, { type: "array", cellFormula: true, cellStyles: true });
 
   const output = workbook.SheetNames.slice(0, 12).map((name, index) =>
     worksheetToPortableSheet(workbook.Sheets[name], name, index),
@@ -91,6 +93,8 @@ function toWorksheet(sheet: PortableSheet) {
   const maxRow = Math.max(0, sheet.rowCount - 1);
   const maxColumn = Math.max(0, sheet.columnCount - 1);
   worksheet["!ref"] = XLSX.utils.encode_range({ s: { c: 0, r: 0 }, e: { c: maxColumn, r: maxRow } });
+  if (sheet.mergedCells.length) worksheet["!merges"] = sheet.mergedCells.map((merge) => XLSX.utils.decode_range(`${merge.start}:${merge.end}`));
+  worksheet["!cols"] = Array.from({ length: sheet.columnCount }, (_, index) => ({ wpx: getColumnWidth(sheet, XLSX.utils.encode_col(index)) }));
 
   Object.entries(sheet.cells).forEach(([address, raw]) => {
     if (raw.startsWith("=")) {
@@ -113,7 +117,7 @@ export function exportWorkbookToXlsx(sheets: PortableSheet[]) {
   sheets.forEach((sheet, index) => {
     XLSX.utils.book_append_sheet(workbook, toWorksheet(sheet), safeSheetName(sheet.name, `ورقة ${index + 1}`));
   });
-  return XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }) as ArrayBuffer;
+  return XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true, cellStyles: true }) as ArrayBuffer;
 }
 
 function escapeCsv(value: string) {

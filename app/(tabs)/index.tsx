@@ -3,36 +3,40 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { useEffect, useMemo, useState } from "react";
-import {
-  FlatList,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import Svg, { Line, Path, Rect, Text as SvgText } from "react-native-svg";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { displayCellValue, type CellValues } from "@/lib/formula-engine";
+import { appendFormulaDraftToken } from "@/lib/formula-editor";
+import { displayCellValue } from "@/lib/formula-engine";
+import {
+  createEmptySheet,
+  createInitialWorkbook,
+  createTemplateSheet,
+  DEFAULT_COLUMN_WIDTH,
+  formatCellDisplay,
+  formatLabel,
+  getColumnWidth,
+  getMergedRangeForAddress,
+  getRangeBounds,
+  isAddressInRange,
+  isMergedChild,
+  normalizeWorkbook,
+  rangeAddresses,
+  rangeNumericSummary,
+  TEMPLATE_DETAILS,
+  type CellNumberFormat,
+  type CellRange,
+  type SpreadsheetSheet,
+  type SpreadsheetWorkbook,
+  type TemplateKind,
+} from "@/lib/spreadsheet-model";
 import { exportSheetToCsv, exportWorkbookToXlsx, importSpreadsheetFile } from "@/lib/workbook-file-utils";
 
-type Sheet = {
-  id: string;
-  name: string;
-  cells: CellValues;
-  rowCount: number;
-  columnCount: number;
-};
-
-type Workbook = { sheets: Sheet[]; activeSheetId: string };
-
 const WORKBOOK_KEY = "jadwali.workbook.v1";
-const INITIAL_ROWS = 14;
-const INITIAL_COLUMNS = 6;
-const FIRST_SHEET: Sheet = { id: "sheet-1", name: "ورقة 1", cells: {}, rowCount: INITIAL_ROWS, columnCount: INITIAL_COLUMNS };
-const INITIAL_WORKBOOK: Workbook = { sheets: [FIRST_SHEET], activeSheetId: FIRST_SHEET.id };
+const FORMAT_OPTIONS: CellNumberFormat[] = ["general", "currency", "percent", "decimal"];
+const COLOR_OPTIONS = ["#FFFFFF", "#FFF7D6", "#E8F7F0", "#E9EEFF", "#FDECEC"];
 
 function safeFileName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").slice(0, 40) || "jadwali";
@@ -41,9 +45,7 @@ function safeFileName(name: string) {
 function arrayBufferToBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
   let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  }
+  for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   return globalThis.btoa(binary);
 }
 
@@ -64,27 +66,119 @@ function columnLabel(index: number) {
   return label;
 }
 
+function arabicToLatinDigits(value: string) {
+  const arabic = "٠١٢٣٤٥٦٧٨٩";
+  const persian = "۰۱۲۳۴۵۶۷۸۹";
+  return value
+    .replace(/[٠-٩]/g, (digit) => String(arabic.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String(persian.indexOf(digit)));
+}
+
+function columnIndex(label: string) {
+  return label.split("").reduce((sum, character) => sum * 26 + character.charCodeAt(0) - 64, 0) - 1;
+}
+
+function parseAddress(value: string) {
+  const normalized = arabicToLatinDigits(value.trim()).toUpperCase().replace(/\s/g, "");
+  const match = normalized.match(/^([A-Z]+)([1-9]\d*)$/);
+  if (!match) return null;
+  return { address: normalized, column: columnIndex(match[1]), row: Number(match[2]) - 1 };
+}
+
 export default function HomeScreen() {
-  const [workbook, setWorkbook] = useState<Workbook>(INITIAL_WORKBOOK);
+  const [workbook, setWorkbook] = useState<SpreadsheetWorkbook>(createInitialWorkbook);
   const [selectedCell, setSelectedCell] = useState("A1");
   const [draft, setDraft] = useState("");
   const [savedMessage, setSavedMessage] = useState("اختر خلية لبدء الإدخال");
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [lastWorkbook, setLastWorkbook] = useState<Workbook | null>(null);
+  const [lastWorkbook, setLastWorkbook] = useState<SpreadsheetWorkbook | null>(null);
   const [isFileAction, setIsFileAction] = useState(false);
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
+  const [showFormatting, setShowFormatting] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showCharts, setShowCharts] = useState(false);
+  const [chartType, setChartType] = useState<"bar" | "line">("bar");
+  const [isRangeSelecting, setIsRangeSelecting] = useState(false);
+  const [selectionRange, setSelectionRange] = useState<CellRange | null>(null);
+  const [goToValue, setGoToValue] = useState("");
+  const [searchValue, setSearchValue] = useState("");
+  const horizontalGridRef = useRef<ScrollView>(null);
+  const verticalGridRef = useRef<ScrollView>(null);
+  const pageScrollRef = useRef<ScrollView>(null);
+  const rangeStartRef = useRef<string | null>(null);
 
   const activeSheet = useMemo(
     () => workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0],
     [workbook],
   );
-  const columns = useMemo(
-    () => Array.from({ length: activeSheet.columnCount }, (_, index) => columnLabel(index)),
-    [activeSheet.columnCount],
-  );
-  const rows = useMemo(
-    () => Array.from({ length: activeSheet.rowCount }, (_, index) => index + 1),
-    [activeSheet.rowCount],
+  const columns = useMemo(() => Array.from({ length: activeSheet.columnCount }, (_, index) => columnLabel(index)), [activeSheet.columnCount]);
+  const rows = useMemo(() => Array.from({ length: activeSheet.rowCount }, (_, index) => index + 1), [activeSheet.rowCount]);
+  const selectedFormat = activeSheet.cellFormats[selectedCell] ?? {};
+  const rangeSummary = useMemo(() => (selectionRange ? rangeNumericSummary(activeSheet, selectionRange) : null), [activeSheet, selectionRange]);
+  const chartData = useMemo(() => {
+    if (!selectionRange) return [];
+    return rangeAddresses(selectionRange.start, selectionRange.end)
+      .map((address) => ({ address, value: Number(arabicToLatinDigits(displayCellValue(address, activeSheet.cells)).replace(/[^0-9.-]/g, "")) }))
+      .filter((point) => Number.isFinite(point.value))
+      .slice(0, 12);
+  }, [activeSheet.cells, selectionRange]);
+  const chartMax = useMemo(() => Math.max(1, ...chartData.map((point) => Math.abs(point.value))), [chartData]);
+  const selectionSummary = useMemo(() => {
+    const numericValues = Object.keys(activeSheet.cells)
+      .map((address) => Number(displayCellValue(address, activeSheet.cells).replace(/,/g, "")))
+      .filter((value) => Number.isFinite(value));
+    const value = Number(formatCellDisplay(selectedCell, activeSheet).replace(/[^0-9.-]/g, ""));
+    return { cellValue: Number.isFinite(value) ? value : null, total: numericValues.reduce((sum, item) => sum + item, 0), count: numericValues.length };
+  }, [activeSheet, selectedCell]);
+
+  const rangeResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => isRangeSelecting,
+        onMoveShouldSetPanResponder: () => isRangeSelecting,
+        onPanResponderGrant: (event) => {
+          const x = event.nativeEvent.locationX;
+          const y = event.nativeEvent.locationY;
+          let offset = 37;
+          const column = columns.find((label) => {
+            const width = getColumnWidth(activeSheet, label);
+            const matches = x >= offset && x < offset + width;
+            offset += width;
+            return matches;
+          });
+          const row = Math.floor(y / 42) + 1;
+          if (!column || row < 1 || row > activeSheet.rowCount) return;
+          const address = `${column}${row}`;
+          rangeStartRef.current = address;
+          setSelectionRange({ start: address, end: address });
+          setSelectedCell(address);
+          setDraft(activeSheet.cells[address] ?? "");
+        },
+        onPanResponderMove: (event) => {
+          if (!rangeStartRef.current) return;
+          const x = event.nativeEvent.locationX;
+          const y = event.nativeEvent.locationY;
+          let offset = 37;
+          const column = columns.find((label) => {
+            const width = getColumnWidth(activeSheet, label);
+            const matches = x >= offset && x < offset + width;
+            offset += width;
+            return matches;
+          });
+          const row = Math.max(1, Math.min(activeSheet.rowCount, Math.floor(y / 42) + 1));
+          if (column) setSelectionRange({ start: rangeStartRef.current, end: `${column}${row}` });
+        },
+        onPanResponderRelease: () => {
+          rangeStartRef.current = null;
+          setIsRangeSelecting(false);
+          setSavedMessage("تم تحديد النطاق؛ يظهر المجموع والمتوسط في شريط الحالة");
+        },
+        onPanResponderTerminate: () => {
+          rangeStartRef.current = null;
+          setIsRangeSelecting(false);
+        },
+      }),
+    [activeSheet, columns, isRangeSelecting],
   );
 
   useEffect(() => {
@@ -92,9 +186,9 @@ export default function HomeScreen() {
     AsyncStorage.getItem(WORKBOOK_KEY)
       .then((stored) => {
         if (!stored || !isActive) return;
-        const parsed = JSON.parse(stored) as Workbook;
-        if (parsed.sheets?.length && parsed.activeSheetId) {
-          setWorkbook(parsed);
+        const restored = normalizeWorkbook(JSON.parse(stored));
+        if (restored) {
+          setWorkbook(restored);
           setSavedMessage("تمت استعادة المصنف المحلي");
         }
       })
@@ -107,23 +201,33 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!hasLoaded) return;
-    AsyncStorage.setItem(WORKBOOK_KEY, JSON.stringify(workbook)).catch(() => {
-      setSavedMessage("تعذر حفظ التغييرات محلياً");
-    });
+    AsyncStorage.setItem(WORKBOOK_KEY, JSON.stringify(workbook)).catch(() => setSavedMessage("تعذر حفظ التغييرات محلياً"));
   }, [hasLoaded, workbook]);
 
-  function updateActiveSheet(updater: (sheet: Sheet) => Sheet) {
+  function updateActiveSheet(updater: (sheet: SpreadsheetSheet) => SpreadsheetSheet) {
+    setLastWorkbook(workbook);
     setWorkbook((current) => ({
       ...current,
       sheets: current.sheets.map((sheet) => (sheet.id === current.activeSheetId ? updater(sheet) : sheet)),
     }));
-    setLastWorkbook(workbook);
+  }
+
+  function revealCell(address: string) {
+    const destination = parseAddress(address);
+    if (!destination) return;
+    requestAnimationFrame(() => {
+      const offset = columns.slice(0, destination.column).reduce((sum, column) => sum + getColumnWidth(activeSheet, column), 0);
+      horizontalGridRef.current?.scrollTo({ x: Math.max(0, offset - DEFAULT_COLUMN_WIDTH), animated: true });
+      verticalGridRef.current?.scrollTo({ y: Math.max(0, destination.row * 42 - 84), animated: true });
+    });
   }
 
   function selectCell(address: string) {
+    if (!isRangeSelecting) setSelectionRange(null);
     setSelectedCell(address);
     setDraft(activeSheet.cells[address] ?? "");
     setSavedMessage(`الخلية ${address} جاهزة للتحرير`);
+    revealCell(address);
   }
 
   function saveCell() {
@@ -147,18 +251,35 @@ export default function HomeScreen() {
     setSavedMessage(`تم مسح محتوى ${selectedCell}`);
   }
 
-  function addSheet() {
-    const nextNumber = workbook.sheets.length + 1;
-    const id = `sheet-${nextNumber}`;
-    const nextSheet: Sheet = { id, name: `ورقة ${nextNumber}`, cells: {}, rowCount: INITIAL_ROWS, columnCount: INITIAL_COLUMNS };
-    setLastWorkbook(workbook);
-    setWorkbook((current) => ({ ...current, sheets: [...current.sheets, nextSheet], activeSheetId: id }));
-    setSelectedCell("A1");
-    setDraft("");
-    setSavedMessage(`تم إنشاء ${nextSheet.name}`);
+  function changeTableSize(axis: "rowCount" | "columnCount") {
+    updateActiveSheet((sheet) => ({ ...sheet, [axis]: sheet[axis] + 1 }));
+    setSavedMessage(axis === "rowCount" ? "تمت إضافة صف جديد" : "تمت إضافة عمود جديد");
   }
 
-  function chooseSheet(sheet: Sheet) {
+  function undoLastChange() {
+    if (!lastWorkbook) {
+      setSavedMessage("لا يوجد تعديل سابق للتراجع عنه");
+      return;
+    }
+    const restored = lastWorkbook.sheets.find((sheet) => sheet.id === lastWorkbook.activeSheetId) ?? lastWorkbook.sheets[0];
+    setWorkbook(lastWorkbook);
+    setLastWorkbook(null);
+    setSelectedCell("A1");
+    setDraft(restored.cells.A1 ?? "");
+    setSavedMessage("تم التراجع عن آخر تعديل");
+  }
+
+  function addSheet() {
+    const nextNumber = workbook.sheets.length + 1;
+    const next = createEmptySheet(`sheet-${Date.now()}`, `ورقة ${nextNumber}`);
+    setLastWorkbook(workbook);
+    setWorkbook((current) => ({ ...current, sheets: [...current.sheets, next], activeSheetId: next.id }));
+    setSelectedCell("A1");
+    setDraft("");
+    setSavedMessage(`تم إنشاء ${next.name}`);
+  }
+
+  function chooseSheet(sheet: SpreadsheetSheet) {
     setWorkbook((current) => ({ ...current, activeSheetId: sheet.id }));
     setSelectedCell("A1");
     setDraft(sheet.cells.A1 ?? "");
@@ -170,39 +291,130 @@ export default function HomeScreen() {
     setSavedMessage(`أُدرجت صيغة ${label}؛ عدّل مراجع الخلايا ثم اضغط التأكيد`);
   }
 
+  function appendFormulaToken(token: string) {
+    setDraft((current) => appendFormulaDraftToken(current, token));
+    setSavedMessage("استخدم المراجع والرموز، ثم اضغط ✓ لحساب النتيجة");
+  }
+
+  function keepFormulaVisible() {
+    requestAnimationFrame(() => pageScrollRef.current?.scrollTo({ y: 0, animated: true }));
+  }
+
   function loadGradeExample() {
     updateActiveSheet((sheet) => ({
       ...sheet,
-      cells: {
-        ...sheet.cells,
-        A2: "أحمد محمد",
-        B2: "٥",
-        C2: "٥",
-        D2: "=B2+C2",
-      },
+      cells: { ...sheet.cells, A2: "أحمد محمد", B2: "٥", C2: "٥", D2: "=B2+C2" },
     }));
     setSelectedCell("D2");
     setDraft("=B2+C2");
-    setSavedMessage("تمت إضافة مثال الدرجات؛ النتيجة في الخلية D2 هي 10");
     setShowGuide(false);
+    setSavedMessage("تمت إضافة مثال الدرجات؛ النتيجة في D2 هي 10");
   }
 
-  function changeTableSize(axis: "rowCount" | "columnCount") {
-    updateActiveSheet((sheet) => ({ ...sheet, [axis]: sheet[axis] + 1 }));
-    setSavedMessage(axis === "rowCount" ? "تمت إضافة صف جديد" : "تمت إضافة عمود جديد");
+  function updateCellFormat(patch: Partial<typeof selectedFormat>) {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      cellFormats: { ...sheet.cellFormats, [selectedCell]: { ...sheet.cellFormats[selectedCell], ...patch } },
+    }));
+    setSavedMessage(`تم تطبيق تنسيق على ${selectedCell}`);
   }
 
-  function undoLastChange() {
-    if (!lastWorkbook) {
-      setSavedMessage("لا يوجد تعديل سابق للتراجع عنه");
+  function clearCellFormat() {
+    updateActiveSheet((sheet) => {
+      const cellFormats = { ...sheet.cellFormats };
+      delete cellFormats[selectedCell];
+      return { ...sheet, cellFormats };
+    });
+    setSavedMessage(`تمت إزالة تنسيق ${selectedCell}`);
+  }
+
+  function startRangeSelection() {
+    setSelectionRange(null);
+    rangeStartRef.current = null;
+    setIsRangeSelecting(true);
+    setSavedMessage("اسحب فوق الخلايا لتحديد نطاق وتحليله");
+  }
+
+  function mergeSelection() {
+    if (!selectionRange) {
+      setSavedMessage("حدد نطاقاً أفقياً أولاً ثم اختر دمج");
       return;
     }
-    const restoredSheet = lastWorkbook.sheets.find((sheet) => sheet.id === lastWorkbook.activeSheetId) ?? lastWorkbook.sheets[0];
-    setWorkbook(lastWorkbook);
-    setLastWorkbook(null);
+    const bounds = getRangeBounds(selectionRange);
+    if (!bounds || bounds.startColumn === bounds.endColumn || bounds.startRow !== bounds.endRow) {
+      setSavedMessage("الدمج متاح لخليتين أو أكثر ضمن الصف نفسه");
+      return;
+    }
+    const overlaps = activeSheet.mergedCells.some((merge) => rangeAddresses(merge.start, merge.end).some((address) => isAddressInRange(address, selectionRange)));
+    if (overlaps) {
+      setSavedMessage("يتداخل النطاق مع خلايا مدمجة مسبقاً");
+      return;
+    }
+    updateActiveSheet((sheet) => ({ ...sheet, mergedCells: [...sheet.mergedCells, selectionRange] }));
+    setSelectedCell(selectionRange.start);
+    setSavedMessage(`تم دمج ${selectionRange.start}:${selectionRange.end}`);
+  }
+
+  function unmergeSelection() {
+    const merge = getMergedRangeForAddress(activeSheet, selectedCell);
+    if (!merge) {
+      setSavedMessage("اختر خلية ضمن نطاق مدمج لإلغاء الدمج");
+      return;
+    }
+    updateActiveSheet((sheet) => ({ ...sheet, mergedCells: sheet.mergedCells.filter((item) => item !== merge) }));
+    setSelectionRange(null);
+    setSavedMessage(`تم إلغاء دمج ${merge.start}:${merge.end}`);
+  }
+
+  function adjustColumnWidth(delta: number) {
+    const match = selectedCell.match(/^([A-Z]+)/);
+    if (!match) return;
+    const column = match[1];
+    const current = getColumnWidth(activeSheet, column);
+    updateActiveSheet((sheet) => ({ ...sheet, columnWidths: { ...sheet.columnWidths, [column]: current + delta } }));
+    setSavedMessage(`تم تعديل عرض العمود ${column}`);
+  }
+
+  function goToCell() {
+    const destination = parseAddress(goToValue);
+    if (!destination) {
+      setSavedMessage("اكتب عنواناً صحيحاً مثل D25");
+      return;
+    }
+    if (destination.column > 60 || destination.row > 500) {
+      setSavedMessage("عنوان الخلية خارج النطاق المدعوم");
+      return;
+    }
+    if (destination.column >= activeSheet.columnCount || destination.row >= activeSheet.rowCount) {
+      updateActiveSheet((sheet) => ({ ...sheet, columnCount: Math.max(sheet.columnCount, destination.column + 1), rowCount: Math.max(sheet.rowCount, destination.row + 1) }));
+    }
+    selectCell(destination.address);
+    setGoToValue("");
+  }
+
+  function findCellByText() {
+    const query = searchValue.trim().toLocaleLowerCase("ar");
+    if (!query) {
+      setSavedMessage("اكتب اسماً أو قيمة للبحث");
+      return;
+    }
+    const found = Object.entries(activeSheet.cells).find(([, value]) => value.toLocaleLowerCase("ar").includes(query));
+    if (!found) {
+      setSavedMessage("لا توجد خلية تطابق البحث في الورقة الحالية");
+      return;
+    }
+    selectCell(found[0]);
+    setSavedMessage(`تم العثور على النص في ${found[0]}`);
+  }
+
+  function applyTemplate(kind: TemplateKind) {
+    const sheet = createTemplateSheet(kind, `template-${kind}-${Date.now()}`);
+    setLastWorkbook(workbook);
+    setWorkbook((current) => ({ ...current, sheets: [...current.sheets, sheet], activeSheetId: sheet.id }));
     setSelectedCell("A1");
-    setDraft(restoredSheet.cells.A1 ?? "");
-    setSavedMessage("تم التراجع عن آخر تعديل");
+    setDraft(sheet.cells.A1 ?? "");
+    setShowTemplates(false);
+    setSavedMessage(`تم إنشاء قالب ${TEMPLATE_DETAILS[kind].title} في ورقة جديدة`);
   }
 
   async function importFile() {
@@ -218,14 +430,12 @@ export default function HomeScreen() {
         setSavedMessage("تم إلغاء اختيار الملف");
         return;
       }
-
       const asset = result.assets[0];
       const name = asset.name.toLowerCase();
       if (!name.endsWith(".csv") && !name.endsWith(".xlsx")) {
         setSavedMessage("الملف غير مدعوم؛ اختر CSV أو XLSX");
         return;
       }
-
       const content = name.endsWith(".csv")
         ? await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.UTF8 })
         : base64ToArrayBuffer(await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 }));
@@ -234,8 +444,7 @@ export default function HomeScreen() {
         setSavedMessage("لا يحتوي الملف على أوراق قابلة للاستيراد");
         return;
       }
-
-      const nextWorkbook: Workbook = { sheets: imported.sheets, activeSheetId: imported.sheets[0].id };
+      const nextWorkbook: SpreadsheetWorkbook = { sheets: imported.sheets, activeSheetId: imported.sheets[0].id };
       setLastWorkbook(workbook);
       setWorkbook(nextWorkbook);
       setSelectedCell("A1");
@@ -258,15 +467,11 @@ export default function HomeScreen() {
       const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
       const content = format === "csv" ? exportSheetToCsv(activeSheet) : arrayBufferToBase64(exportWorkbookToXlsx(workbook.sheets));
       await FileSystem.writeAsStringAsync(fileUri, content, { encoding: format === "csv" ? FileSystem.EncodingType.UTF8 : FileSystem.EncodingType.Base64 });
-
       if (!(await Sharing.isAvailableAsync())) {
         setSavedMessage("تم تجهيز الملف، لكن المشاركة غير متاحة على هذا الجهاز");
         return;
       }
-      await Sharing.shareAsync(fileUri, {
-        dialogTitle: format === "csv" ? "تصدير ورقة CSV" : "تصدير مصنف Excel",
-        mimeType: format === "csv" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      });
+      await Sharing.shareAsync(fileUri, { dialogTitle: format === "csv" ? "تصدير ورقة CSV" : "تصدير مصنف Excel", mimeType: format === "csv" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       setSavedMessage(format === "csv" ? "تم تجهيز CSV للتحميل أو المشاركة" : "تم تجهيز ملف Excel للتحميل أو المشاركة");
     } catch {
       setSavedMessage("تعذر تصدير الملف؛ حاول مرة أخرى");
@@ -277,272 +482,253 @@ export default function HomeScreen() {
 
   return (
     <ScreenContainer className="flex-1" containerClassName="bg-background">
-      <View style={styles.page}>
+      <KeyboardAvoidingView style={styles.keyboardAvoider} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
+        <ScrollView ref={pageScrollRef} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={styles.pageScrollContent}>
+          <View style={styles.page}>
         <View style={styles.header}>
           <View style={styles.brandGroup}>
-            <View style={styles.logoTile}>
-              <MaterialIcons name="grid-on" size={21} color="#FFFFFF" />
-            </View>
-            <View>
-              <Text style={styles.brand}>جدولي</Text>
-              <Text style={styles.documentName}>مصنف جديد</Text>
+            <View style={styles.logoTile}><MaterialIcons name="grid-on" size={21} color="#FFFFFF" /></View>
+            <View><Text style={styles.brand}>جدولي</Text><Text style={styles.documentName}>مصنف محلي</Text></View>
+          </View>
+          <View style={styles.headerBadge}><View style={styles.headerBadgeDot} /><Text style={styles.headerBadgeText}>{hasLoaded ? "محفوظ محلياً" : "جارٍ التحميل"}</Text></View>
+        </View>
+
+        <View style={styles.quickActionsRow}>
+          <Pressable onPress={() => setShowTemplates((visible) => !visible)} style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]}><MaterialIcons name="dashboard-customize" size={17} color="#FFFFFF" /><Text style={styles.primaryActionText}>قوالب</Text></Pressable>
+          <Pressable onPress={importFile} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="file-upload" size={17} color="#2457E5" /><Text style={styles.utilityActionText}>استيراد</Text></Pressable>
+          <Pressable onPress={() => exportFile("csv")} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="download" size={17} color="#16865B" /><Text style={[styles.utilityActionText, styles.csvActionText]}>CSV</Text></Pressable>
+          <Pressable onPress={() => exportFile("xlsx")} disabled={isFileAction} style={({ pressed }) => [styles.utilityAction, (pressed || isFileAction) && styles.toolPressed]}><MaterialIcons name="table-view" size={17} color="#2457E5" /><Text style={styles.utilityActionText}>Excel</Text></Pressable>
+        </View>
+
+        {showTemplates && (
+          <View style={styles.templatesCard}>
+            <Text style={styles.sectionTitle}>ابدأ بقالب جاهز</Text>
+            <View style={styles.templateOptions}>
+              {(Object.keys(TEMPLATE_DETAILS) as TemplateKind[]).map((kind) => {
+                const template = TEMPLATE_DETAILS[kind];
+                return <Pressable key={kind} onPress={() => applyTemplate(kind)} style={({ pressed }) => [styles.templateButton, pressed && styles.pressed]}><MaterialIcons name={template.icon} size={19} color="#2457E5" /><View style={styles.templateTextGroup}><Text style={styles.templateTitle}>{template.title}</Text><Text style={styles.templateDescription}>{template.description}</Text></View></Pressable>;
+              })}
             </View>
           </View>
-          <View style={styles.headerBadge}>
-            <View style={styles.headerBadgeDot} />
-            <Text style={styles.headerBadgeText}>{hasLoaded ? "محفوظ محلياً" : "جارٍ التحميل"}</Text>
+        )}
+
+        <View style={styles.formulaCard}>
+          <View style={styles.formulaMeta}><View style={styles.addressBadge}><Text style={styles.addressText}>{selectedCell}</Text></View><Text style={styles.formulaLabel}>شريط الصيغ</Text></View>
+          <View style={styles.editorRow}>
+            <TextInput accessibilityLabel="محرر الخلية" value={draft} onChangeText={setDraft} onFocus={keepFormulaVisible} onSubmitEditing={saveCell} placeholder="اكتب =B2+C2 أو قيمة" placeholderTextColor="#8B99AE" style={styles.formulaInput} textAlign="right" returnKeyType="done" autoCapitalize="characters" />
+            <Pressable accessibilityLabel="تأكيد تعديل الخلية" onPress={saveCell} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}><MaterialIcons name="check" size={20} color="#FFFFFF" /></Pressable>
           </View>
+          <View style={styles.formulaHintRow}>
+            <Text style={styles.formulaHintText}>مثال سريع: <Text style={styles.formulaExample}>=B2+C2</Text> لحساب درجتين</Text>
+            <Pressable onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.formulaHelpButton, pressed && styles.toolPressed]}><MaterialIcons name="help-outline" size={15} color="#2457E5" /><Text style={styles.formulaHelpText}>شرح</Text></Pressable>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.tokenToolsRow}>
+            <Pressable onPress={() => appendFormulaToken("B2")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>B2</Text></Pressable>
+            <Pressable onPress={() => appendFormulaToken("+")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.symbolToken}>+</Text></Pressable>
+            <Pressable onPress={() => appendFormulaToken("C2")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>C2</Text></Pressable>
+            <Pressable onPress={() => insertFormula("=B2+C2", "جمع درجتين")} style={({ pressed }) => [styles.exampleTokenTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={16} color="#FFFFFF" /><Text style={styles.exampleTokenText}>=B2+C2</Text></Pressable>
+            <Pressable onPress={() => appendFormulaToken("SUM(")} style={({ pressed }) => [styles.tokenTool, pressed && styles.toolPressed]}><Text style={styles.tokenText}>Σ</Text></Pressable>
+          </ScrollView>
+          <View style={styles.suggestionsHeader}><MaterialIcons name="auto-awesome" size={15} color="#2457E5" /><Text style={styles.suggestionsLabel}>دوال جاهزة</Text></View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.formulaToolsRow}>
+            <Pressable onPress={() => insertFormula("=B2-C2", "الطرح")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>−</Text><Text style={styles.formulaToolText}>طرح</Text></Pressable>
+            <Pressable onPress={() => insertFormula("=B2*C2", "الضرب")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>×</Text><Text style={styles.formulaToolText}>ضرب</Text></Pressable>
+            <Pressable onPress={() => insertFormula("=B2/C2", "القسمة")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><Text style={styles.operatorText}>÷</Text><Text style={styles.formulaToolText}>قسمة</Text></Pressable>
+            <Pressable onPress={() => insertFormula("=SUM(B2:B6)", "SUM")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>SUM</Text></Pressable>
+            <Pressable onPress={() => insertFormula("=AVERAGE(B2:B6)", "AVERAGE")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}><MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>متوسط</Text></Pressable>
+          </ScrollView>
         </View>
 
         <View style={styles.guideCard}>
-          <Pressable
-            accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول"
-            onPress={() => setShowGuide((visible) => !visible)}
-            style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}
-          >
-            <View style={styles.guideHeading}>
-              <View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View>
-              <View>
-                <Text style={styles.guideTitle}>كيف أحسب مجموع درجتين؟</Text>
-                <Text style={styles.guideSubtitle}>مثال واضح: أحمد محمد، ٥ + ٥ = 10</Text>
-              </View>
-            </View>
+          <Pressable accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول" onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}>
+            <View style={styles.guideHeading}><View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View><View><Text style={styles.guideTitle}>كيف أحسب مجموع درجتين؟</Text><Text style={styles.guideSubtitle}>أحمد محمد: ٥ + ٥ = 10</Text></View></View>
             <MaterialIcons name={showGuide ? "expand-less" : "expand-more"} size={22} color="#2457E5" />
           </Pressable>
-          {showGuide && (
-            <View style={styles.guideBody}>
-              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>١.</Text> اكتب الاسم «أحمد محمد» في الخلية A2.</Text>
-              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>٢.</Text> اكتب ٥ في B2، ثم اكتب ٥ في C2.</Text>
-              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>٣.</Text> اختر D2، واكتب <Text style={styles.formulaExample}>=B2+C2</Text> في شريط الصيغ ثم اضغط ✓.</Text>
-              <View style={styles.guideResultRow}>
-                <Text style={styles.guideResultText}>ستظهر النتيجة: <Text style={styles.guideResultValue}>10</Text></Text>
-                <Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}>
-                  <MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" />
-                  <Text style={styles.loadExampleText}>جرّب المثال</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
+          {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. اكتب الاسم في A2، ثم اكتب ٥ في B2 و٥ في C2.</Text><Text style={styles.guideStep}>٢. اختر D2، واكتب <Text style={styles.formulaExample}>=B2+C2</Text> ثم اضغط ✓.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>النتيجة: <Text style={styles.guideResultValue}>10</Text></Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
         </View>
 
-        <View style={styles.fileActionsRow}>
-          <Pressable accessibilityLabel="استيراد ملف CSV أو Excel" disabled={isFileAction} onPress={importFile} style={({ pressed }) => [styles.fileActionButton, (pressed || isFileAction) && styles.fileActionPressed]}>
-            <MaterialIcons name="file-upload" size={18} color="#2457E5" /><Text style={styles.fileActionText}>استيراد</Text>
-          </Pressable>
-          <Pressable accessibilityLabel="تصدير الورقة الحالية إلى CSV" disabled={isFileAction} onPress={() => exportFile("csv")} style={({ pressed }) => [styles.fileActionButton, (pressed || isFileAction) && styles.fileActionPressed]}>
-            <MaterialIcons name="download" size={18} color="#16865B" /><Text style={[styles.fileActionText, styles.csvActionText]}>CSV</Text>
-          </Pressable>
-          <Pressable accessibilityLabel="تصدير المصنف إلى Excel" disabled={isFileAction} onPress={() => exportFile("xlsx")} style={({ pressed }) => [styles.fileActionButton, (pressed || isFileAction) && styles.fileActionPressed]}>
-            <MaterialIcons name="table-view" size={18} color="#2457E5" /><Text style={styles.fileActionText}>Excel</Text>
-          </Pressable>
-          <Text style={styles.fileHint}>{isFileAction ? "جارٍ تجهيز الملف…" : "CSV أو XLSX"}</Text>
+        <View style={styles.searchCard}>
+          <View style={styles.searchSection}><MaterialIcons name="my-location" size={17} color="#2457E5" /><TextInput value={goToValue} onChangeText={setGoToValue} onSubmitEditing={goToCell} placeholder="انتقل إلى D25" placeholderTextColor="#8B99AE" style={styles.searchInput} textAlign="right" autoCapitalize="characters" returnKeyType="go" /><Pressable onPress={goToCell} style={({ pressed }) => [styles.searchButton, pressed && styles.pressed]}><Text style={styles.searchButtonText}>انتقال</Text></Pressable></View>
+          <View style={styles.searchDivider} />
+          <View style={styles.searchSection}><MaterialIcons name="search" size={17} color="#2457E5" /><TextInput value={searchValue} onChangeText={setSearchValue} onSubmitEditing={findCellByText} placeholder="ابحث عن اسم" placeholderTextColor="#8B99AE" style={styles.searchInput} textAlign="right" returnKeyType="search" /><Pressable onPress={findCellByText} style={({ pressed }) => [styles.searchButton, pressed && styles.pressed]}><Text style={styles.searchButtonText}>بحث</Text></Pressable></View>
         </View>
-
-        <View style={styles.formulaCard}>
-          <View style={styles.formulaMeta}>
-            <View style={styles.addressBadge}>
-              <Text style={styles.addressText}>{selectedCell}</Text>
-            </View>
-            <Text style={styles.formulaLabel}>شريط الصيغ</Text>
-          </View>
-          <View style={styles.editorRow}>
-            <TextInput
-              accessibilityLabel="محرر الخلية"
-              value={draft}
-              onChangeText={setDraft}
-              onSubmitEditing={saveCell}
-              placeholder="قيمة أو صيغة تبدأ بـ ="
-              placeholderTextColor="#8B99AE"
-              style={styles.formulaInput}
-              textAlign="right"
-              returnKeyType="done"
-              autoCapitalize="characters"
-            />
-            <Pressable accessibilityLabel="تأكيد تعديل الخلية" onPress={saveCell} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}>
-              <MaterialIcons name="check" size={20} color="#FFFFFF" />
-            </Pressable>
-          </View>
-        </View>
-
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.formulaToolsRow}>
-          <Pressable onPress={() => insertFormula("=SUM(A1:A3)", "SUM")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}>
-            <Text style={styles.sigmaText}>Σ</Text><Text style={styles.formulaToolText}>جمع</Text>
-          </Pressable>
-          <Pressable onPress={() => insertFormula("=A1-B1", "الطرح")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}>
-            <Text style={styles.operatorText}>−</Text><Text style={styles.formulaToolText}>طرح</Text>
-          </Pressable>
-          <Pressable onPress={() => insertFormula("=A1*B1", "الضرب")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}>
-            <Text style={styles.operatorText}>×</Text><Text style={styles.formulaToolText}>ضرب</Text>
-          </Pressable>
-          <Pressable onPress={() => insertFormula("=A1/B1", "القسمة")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}>
-            <Text style={styles.operatorText}>÷</Text><Text style={styles.formulaToolText}>قسمة</Text>
-          </Pressable>
-          <Pressable onPress={() => insertFormula("=AVERAGE(A1:A3)", "AVERAGE")} style={({ pressed }) => [styles.formulaTool, pressed && styles.toolPressed]}>
-            <MaterialIcons name="functions" size={17} color="#2457E5" /><Text style={styles.formulaToolText}>متوسط</Text>
-          </Pressable>
-        </ScrollView>
 
         <View style={styles.toolsRow}>
-          <Pressable onPress={() => changeTableSize("columnCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}>
-            <MaterialIcons name="view-column" size={18} color="#2457E5" /><Text style={styles.toolText}>عمود</Text>
-          </Pressable>
-          <Pressable onPress={() => changeTableSize("rowCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}>
-            <MaterialIcons name="view-agenda" size={18} color="#2457E5" /><Text style={styles.toolText}>صف</Text>
-          </Pressable>
-          <Pressable onPress={clearSelectedCell} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}>
-            <MaterialIcons name="backspace" size={18} color="#C24141" /><Text style={[styles.toolText, styles.clearText]}>مسح</Text>
-          </Pressable>
-          <Pressable onPress={undoLastChange} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}>
-            <MaterialIcons name="undo" size={18} color="#2457E5" /><Text style={styles.toolText}>تراجع</Text>
-          </Pressable>
-          <View style={styles.tipPill}>
-            <MaterialIcons name="touch-app" size={16} color="#64748B" /><Text style={styles.tipText}>المس أي خلية</Text>
-          </View>
+          <Pressable onPress={startRangeSelection} style={({ pressed }) => [styles.toolButton, isRangeSelecting && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="select-all" size={18} color="#2457E5" /><Text style={styles.toolText}>نطاق</Text></Pressable>
+          <Pressable onPress={() => setShowFormatting((visible) => !visible)} style={({ pressed }) => [styles.toolButton, showFormatting && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="format-paint" size={18} color="#2457E5" /><Text style={styles.toolText}>تنسيق</Text></Pressable>
+          <Pressable onPress={() => changeTableSize("columnCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="view-column" size={18} color="#2457E5" /><Text style={styles.toolText}>عمود</Text></Pressable>
+          <Pressable onPress={() => changeTableSize("rowCount")} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="view-agenda" size={18} color="#2457E5" /><Text style={styles.toolText}>صف</Text></Pressable>
+          <Pressable onPress={clearSelectedCell} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="backspace" size={18} color="#C24141" /><Text style={[styles.toolText, styles.clearText]}>مسح</Text></Pressable>
+          <Pressable onPress={undoLastChange} style={({ pressed }) => [styles.toolButton, pressed && styles.toolPressed]}><MaterialIcons name="undo" size={18} color="#2457E5" /><Text style={styles.toolText}>تراجع</Text></Pressable>
         </View>
 
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.analysisToolsRow}>
+          <Pressable onPress={mergeSelection} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="merge-type" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>دمج</Text></Pressable>
+          <Pressable onPress={unmergeSelection} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="vertical-split" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>إلغاء الدمج</Text></Pressable>
+          <Pressable onPress={() => adjustColumnWidth(-16)} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="unfold-less" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>أضيق</Text></Pressable>
+          <Pressable onPress={() => adjustColumnWidth(16)} style={({ pressed }) => [styles.analysisTool, pressed && styles.toolPressed]}><MaterialIcons name="unfold-more" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>أوسع</Text></Pressable>
+          <Pressable onPress={() => setShowCharts((visible) => !visible)} style={({ pressed }) => [styles.analysisTool, showCharts && styles.activeToolButton, pressed && styles.toolPressed]}><MaterialIcons name="insert-chart-outlined" size={18} color="#2457E5" /><Text style={styles.analysisToolText}>مخطط</Text></Pressable>
+        </ScrollView>
+
+        {showFormatting && <View style={styles.formatCard}><View style={styles.formatHeader}><Text style={styles.formatTitle}>تنسيق {selectedCell}</Text><Pressable onPress={clearCellFormat} style={({ pressed }) => [styles.clearFormatButton, pressed && styles.toolPressed]}><Text style={styles.clearFormatText}>إزالة التنسيق</Text></Pressable></View><Text style={styles.formatLabel}>عرض الرقم</Text><View style={styles.formatOptions}>{FORMAT_OPTIONS.map((format) => <Pressable key={format} onPress={() => updateCellFormat({ numberFormat: format })} style={({ pressed }) => [styles.formatChip, selectedFormat.numberFormat === format && styles.activeFormatChip, pressed && styles.toolPressed]}><Text style={[styles.formatChipText, selectedFormat.numberFormat === format && styles.activeFormatChipText]}>{formatLabel(format)}</Text></Pressable>)}</View><Text style={styles.formatLabel}>لون الخلفية</Text><View style={styles.colorOptions}>{COLOR_OPTIONS.map((color) => <Pressable key={color} accessibilityLabel={`تطبيق اللون ${color}`} onPress={() => updateCellFormat({ backgroundColor: color })} style={({ pressed }) => [styles.colorSwatch, { backgroundColor: color }, selectedFormat.backgroundColor === color && styles.activeColorSwatch, pressed && styles.toolPressed]}>{selectedFormat.backgroundColor === color && <MaterialIcons name="check" size={15} color="#2457E5" />}</Pressable>)}</View></View>}
+
+        {showCharts && <View style={styles.chartCard}><View style={styles.chartHeader}><View><Text style={styles.chartTitle}>مخطط بيانات النطاق</Text><Text style={styles.chartSubtitle}>{selectionRange ? `${selectionRange.start}:${selectionRange.end}` : "حدد نطاقاً أولاً"}</Text></View><View style={styles.chartTypeSwitch}><Pressable onPress={() => setChartType("bar")} style={({ pressed }) => [styles.chartTypeButton, chartType === "bar" && styles.activeChartTypeButton, pressed && styles.toolPressed]}><MaterialIcons name="bar-chart" size={16} color="#2457E5" /></Pressable><Pressable onPress={() => setChartType("line")} style={({ pressed }) => [styles.chartTypeButton, chartType === "line" && styles.activeChartTypeButton, pressed && styles.toolPressed]}><MaterialIcons name="show-chart" size={16} color="#2457E5" /></Pressable></View></View>{chartData.length ? <Svg width={320} height={178} viewBox="0 0 320 178"><Line x1="26" y1="144" x2="305" y2="144" stroke="#CBD5E1" strokeWidth="1" />{chartType === "bar" ? chartData.map((point, index) => { const step = 232 / chartData.length; const width = Math.max(13, step - 6); const height = Math.max(3, Math.abs(point.value) / chartMax * 105); return <Rect key={point.address} x={34 + index * step} y={144 - height} width={width} height={height} rx="4" fill="#2457E5" />; }) : <Path d={`M ${chartData.map((point, index) => `${38 + index * (232 / Math.max(chartData.length - 1, 1))} ${144 - Math.abs(point.value) / chartMax * 105}`).join(" L ")}`} fill="none" stroke="#16865B" strokeWidth="3" />}{chartData.map((point, index) => <SvgText key={`${point.address}-label`} x={42 + index * (232 / Math.max(chartData.length, 1))} y="164" fill="#64748B" fontSize="9">{point.address}</SvgText>)}</Svg> : <Text style={styles.emptyChartText}>حدد نطاقاً يحتوي أرقاماً، ثم افتح المخطط.</Text>}</View>}
+
         <View style={styles.sheetCard}>
-          <View style={styles.sheetTopline}>
-            <View style={styles.sheetTitleGroup}>
-              <View style={styles.activeSheetDot} /><Text style={styles.sheetTitle}>{activeSheet.name}</Text>
-            </View>
-            <Text style={styles.sheetHint}>{savedMessage}</Text>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gridScrollContent}>
+          <View style={styles.sheetTopline}><View style={styles.sheetTitleGroup}><View style={styles.activeSheetDot} /><Text style={styles.sheetTitle}>{activeSheet.name}</Text><View style={styles.frozenPill}><MaterialIcons name="push-pin" size={12} color="#64748B" /><Text style={styles.frozenPillText}>العناوين ثابتة</Text></View></View><Text style={styles.sheetHint}>{savedMessage}</Text></View>
+          <ScrollView ref={horizontalGridRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gridScrollContent}>
             <View>
-              <View style={styles.headerRow}>
-                <View style={styles.cornerCell} />
-                {columns.map((column) => <View key={column} style={styles.columnHeader}><Text style={styles.columnHeaderText}>{column}</Text></View>)}
-              </View>
-              <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
-                {rows.map((row) => (
-                  <View key={row} style={styles.gridRow}>
-                    <View style={styles.rowHeader}><Text style={styles.rowHeaderText}>{row}</Text></View>
-                    {columns.map((column) => {
-                      const address = `${column}${row}`;
-                      const isSelected = address === selectedCell;
-                      return (
-                        <Pressable key={address} accessibilityLabel={`الخلية ${address}`} onPress={() => selectCell(address)} style={({ pressed }) => [styles.cell, isSelected && styles.selectedCell, pressed && styles.cellPressed]}>
-                          <Text numberOfLines={1} style={[styles.cellText, isSelected && styles.selectedCellText]}>{displayCellValue(address, activeSheet.cells)}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                ))}
+              <View style={styles.headerRow}><View style={styles.cornerCell} />{columns.map((column) => <View key={column} style={[styles.columnHeader, { width: getColumnWidth(activeSheet, column) }]}><Text style={styles.columnHeaderText}>{column}</Text></View>)}</View>
+              <ScrollView ref={verticalGridRef} showsVerticalScrollIndicator={false} nestedScrollEnabled>
+                <View {...rangeResponder.panHandlers}>{rows.map((row) => <View key={row} style={styles.gridRow}><View style={styles.rowHeader}><Text style={styles.rowHeaderText}>{row}</Text></View>{columns.map((column) => { const address = `${column}${row}`; const selected = address === selectedCell; const inRange = Boolean(selectionRange && isAddressInRange(address, selectionRange)); const merged = getMergedRangeForAddress(activeSheet, address); if (isMergedChild(activeSheet, address)) return null; const bounds = merged ? getRangeBounds(merged) : null; const mergedWidth = bounds ? columns.slice(bounds.startColumn, bounds.endColumn + 1).reduce((sum, item) => sum + getColumnWidth(activeSheet, item), 0) : getColumnWidth(activeSheet, column); const cellStyle = activeSheet.cellFormats[address]; return <Pressable key={address} accessibilityLabel={`الخلية ${address}`} onLongPress={startRangeSelection} onPress={() => selectCell(address)} style={({ pressed }) => [styles.cell, { width: mergedWidth }, cellStyle?.backgroundColor ? { backgroundColor: cellStyle.backgroundColor } : null, inRange && styles.rangeCell, selected && styles.selectedCell, pressed && styles.cellPressed]}><Text numberOfLines={1} style={[styles.cellText, cellStyle?.textColor ? { color: cellStyle.textColor } : null, selected && styles.selectedCellText]}>{formatCellDisplay(address, activeSheet)}</Text></Pressable>; })}</View>)}</View>
               </ScrollView>
             </View>
           </ScrollView>
-          <View style={styles.sheetTabsBar}>
-            <FlatList
-              horizontal
-              data={workbook.sheets}
-              keyExtractor={(sheet) => sheet.id}
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.tabsList}
-              renderItem={({ item }) => (
-                <Pressable onPress={() => chooseSheet(item)} style={({ pressed }) => [styles.sheetTab, item.id === activeSheet.id && styles.activeSheetTab, pressed && styles.toolPressed]}>
-                  <Text style={[styles.sheetTabText, item.id === activeSheet.id && styles.activeSheetTabText]}>{item.name}</Text>
-                </Pressable>
-              )}
-            />
-            <Pressable accessibilityLabel="إضافة ورقة عمل" onPress={addSheet} style={({ pressed }) => [styles.addSheetButton, pressed && styles.pressed]}>
-              <MaterialIcons name="add" size={20} color="#2457E5" />
-            </Pressable>
-          </View>
+          <View style={styles.sheetTabsBar}><FlatList horizontal data={workbook.sheets} keyExtractor={(sheet) => sheet.id} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsList} renderItem={({ item }) => <Pressable onPress={() => chooseSheet(item)} style={({ pressed }) => [styles.sheetTab, item.id === activeSheet.id && styles.activeSheetTab, pressed && styles.toolPressed]}><Text style={[styles.sheetTabText, item.id === activeSheet.id && styles.activeSheetTabText]}>{item.name}</Text></Pressable>} /><Pressable accessibilityLabel="إضافة ورقة عمل" onPress={addSheet} style={({ pressed }) => [styles.addSheetButton, pressed && styles.pressed]}><MaterialIcons name="add" size={20} color="#2457E5" /></Pressable></View>
         </View>
 
-        <View style={styles.bottomBar}>
-          <View style={styles.bottomInfo}>
-            <MaterialIcons name="info-outline" size={17} color="#64748B" />
-            <Text style={styles.bottomInfoText}>النتائج تُحدّث تلقائياً عند تعديل المراجع</Text>
+        <View style={styles.statusBar}>{rangeSummary ? <><View style={styles.statusItem}><MaterialIcons name="select-all" size={16} color="#2457E5" /><Text style={styles.statusText}>{selectionRange?.start}:{selectionRange?.end}</Text></View><View style={styles.statusDivider} /><View style={styles.statusItem}><MaterialIcons name="functions" size={16} color="#16865B" /><Text style={styles.statusText}>المجموع</Text><Text style={styles.statusValue}>{rangeSummary.total}</Text></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Text style={styles.statusText}>المتوسط</Text><Text style={styles.statusValue}>{rangeSummary.average.toFixed(2)}</Text></View></> : <><View style={styles.statusItem}><MaterialIcons name="pin-drop" size={16} color="#2457E5" /><Text style={styles.statusText}>{selectedCell}</Text><Text style={styles.statusValue}>{selectionSummary.cellValue === null ? "نص أو فارغ" : selectionSummary.cellValue}</Text></View><View style={styles.statusDivider} /><View style={styles.statusItem}><MaterialIcons name="functions" size={16} color="#16865B" /><Text style={styles.statusText}>مجموع القيم</Text><Text style={styles.statusValue}>{selectionSummary.total}</Text></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Text style={styles.statusText}>{selectionSummary.count} قيمة رقمية</Text></View></>}</View>
           </View>
-          <View style={styles.cellCounter}><Text style={styles.cellCounterText}>{Object.keys(activeSheet.cells).length} خلية</Text></View>
-        </View>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#F7F9FE", paddingHorizontal: 16, paddingTop: 12 },
-  header: { flexDirection: "row-reverse", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  keyboardAvoider: { flex: 1 },
+  pageScrollContent: { flexGrow: 1 },
+  page: { flexGrow: 1, backgroundColor: "#F7F9FE", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
+  header: { flexDirection: "row-reverse", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
   brandGroup: { flexDirection: "row-reverse", alignItems: "center", gap: 10 },
-  logoTile: { width: 39, height: 39, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: "#2457E5", shadowColor: "#2457E5", shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 3 },
+  logoTile: { width: 39, height: 39, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: "#2457E5", elevation: 3 },
   brand: { color: "#13213A", fontSize: 21, fontWeight: "800", lineHeight: 27, textAlign: "right" },
   documentName: { color: "#64748B", fontSize: 12, fontWeight: "500", lineHeight: 17, textAlign: "right" },
   headerBadge: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 99, backgroundColor: "#E8F7F0" },
   headerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#16865B" },
   headerBadgeText: { color: "#16865B", fontSize: 11, fontWeight: "700" },
-  guideCard: { marginBottom: 12, padding: 12, borderRadius: 16, backgroundColor: "#F0F4FF", borderWidth: 1, borderColor: "#D8E2FF" },
+  quickActionsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, marginBottom: 10 },
+  primaryAction: { flexDirection: "row-reverse", alignItems: "center", gap: 5, minHeight: 36, paddingHorizontal: 11, borderRadius: 10, backgroundColor: "#2457E5" },
+  primaryActionText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
+  utilityAction: { flexDirection: "row-reverse", alignItems: "center", gap: 4, minHeight: 36, paddingHorizontal: 9, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  utilityActionText: { color: "#2457E5", fontSize: 12, fontWeight: "800" },
+  csvActionText: { color: "#16865B" },
+  templatesCard: { marginBottom: 10, padding: 12, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  sectionTitle: { color: "#13213A", fontSize: 13, fontWeight: "800", textAlign: "right", marginBottom: 8 },
+  templateOptions: { gap: 7 },
+  templateButton: { flexDirection: "row-reverse", alignItems: "center", gap: 9, padding: 9, borderRadius: 11, backgroundColor: "#F7F9FE" },
+  templateTextGroup: { flex: 1 },
+  templateTitle: { color: "#2457E5", fontSize: 12, fontWeight: "800", textAlign: "right" },
+  templateDescription: { color: "#64748B", fontSize: 10, fontWeight: "600", marginTop: 1, textAlign: "right" },
+  guideCard: { marginBottom: 10, padding: 11, borderRadius: 16, backgroundColor: "#F0F4FF", borderWidth: 1, borderColor: "#D8E2FF" },
   guideHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between" },
   guideHeading: { flexDirection: "row-reverse", alignItems: "center", gap: 9, flex: 1 },
   guideIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: "#FFFFFF" },
   guideTitle: { color: "#13213A", fontSize: 14, fontWeight: "800", lineHeight: 20, textAlign: "right" },
   guideSubtitle: { color: "#64748B", fontSize: 11, fontWeight: "600", lineHeight: 17, textAlign: "right" },
-  guideBody: { marginTop: 10, gap: 5 },
-  guideStep: { color: "#40516D", fontSize: 12, fontWeight: "600", lineHeight: 20, textAlign: "right" },
-  guideStepNumber: { color: "#2457E5", fontWeight: "900" },
+  guideBody: { marginTop: 8, gap: 3 },
+  guideStep: { color: "#40516D", fontSize: 11, fontWeight: "600", lineHeight: 18, textAlign: "right" },
   formulaExample: { color: "#2457E5", fontWeight: "900" },
-  guideResultRow: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginTop: 5 },
+  guideResultRow: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginTop: 3 },
   guideResultText: { color: "#40516D", fontSize: 12, fontWeight: "700" },
   guideResultValue: { color: "#16865B", fontSize: 15, fontWeight: "900" },
-  loadExampleButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 9, backgroundColor: "#2457E5" },
+  loadExampleButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 9, backgroundColor: "#2457E5" },
   loadExampleText: { color: "#FFFFFF", fontSize: 11, fontWeight: "800" },
-  fileActionsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, marginBottom: 12 },
-  fileActionButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, minHeight: 36, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
-  fileActionPressed: { opacity: 0.55, transform: [{ scale: 0.98 }] },
-  fileActionText: { color: "#2457E5", fontSize: 12, fontWeight: "800" },
-  csvActionText: { color: "#16865B" },
-  fileHint: { marginRight: "auto", color: "#7A879B", fontSize: 10, fontWeight: "600" },
-  formulaCard: { backgroundColor: "#FFFFFF", borderRadius: 18, padding: 12, borderWidth: 1, borderColor: "#E3EAF5", shadowColor: "#183B74", shadowOpacity: 0.06, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 2 },
-  formulaMeta: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 9 },
+  searchCard: { flexDirection: "row-reverse", alignItems: "center", marginBottom: 10, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 13, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E3EAF5" },
+  searchSection: { flexDirection: "row-reverse", alignItems: "center", gap: 5, flex: 1 },
+  searchInput: { minWidth: 0, flex: 1, paddingVertical: 4, color: "#13213A", fontSize: 11, fontWeight: "600" },
+  searchButton: { paddingHorizontal: 7, paddingVertical: 5, borderRadius: 7, backgroundColor: "#E9EEFF" },
+  searchButtonText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  searchDivider: { width: 1, height: 24, marginHorizontal: 6, backgroundColor: "#E3EAF5" },
+  formulaCard: { marginBottom: 10, padding: 11, borderRadius: 17, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E3EAF5", elevation: 1 },
+  formulaMeta: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
   addressBadge: { minWidth: 47, paddingHorizontal: 9, paddingVertical: 4, alignItems: "center", borderRadius: 7, backgroundColor: "#E9EEFF" },
   addressText: { color: "#2457E5", fontSize: 12, fontWeight: "800" },
   formulaLabel: { color: "#64748B", fontSize: 12, fontWeight: "600" },
   editorRow: { flexDirection: "row-reverse", alignItems: "center", gap: 9 },
-  formulaInput: { flex: 1, minHeight: 43, paddingHorizontal: 12, color: "#13213A", fontSize: 14, fontWeight: "600", backgroundColor: "#F8FAFE", borderRadius: 11, borderWidth: 1, borderColor: "#E3EAF5" },
-  saveButton: { width: 43, height: 43, alignItems: "center", justifyContent: "center", borderRadius: 12, backgroundColor: "#2457E5" },
-  pressed: { transform: [{ scale: 0.97 }], opacity: 0.92 },
-  formulaToolsRow: { flexDirection: "row-reverse", gap: 7, paddingVertical: 11 },
-  formulaTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: "#EAF0FF", borderWidth: 1, borderColor: "#D8E2FF" },
-  formulaToolText: { color: "#2457E5", fontSize: 12, fontWeight: "800" },
-  sigmaText: { color: "#2457E5", fontSize: 18, fontWeight: "900", lineHeight: 18 },
-  operatorText: { color: "#2457E5", fontSize: 17, fontWeight: "900", lineHeight: 18 },
-  toolsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, paddingBottom: 12 },
-  toolButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E3EAF5" },
-  toolPressed: { opacity: 0.72 },
-  toolText: { color: "#2457E5", fontSize: 12, fontWeight: "700" },
+  formulaInput: { flex: 1, minHeight: 42, paddingHorizontal: 11, color: "#13213A", fontSize: 14, fontWeight: "600", backgroundColor: "#F8FAFE", borderRadius: 11, borderWidth: 1, borderColor: "#E3EAF5" },
+  saveButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 12, backgroundColor: "#2457E5" },
+  formulaHintRow: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 8 },
+  formulaHintText: { flex: 1, color: "#64748B", fontSize: 11, fontWeight: "600", textAlign: "right" },
+  formulaHelpButton: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 8, backgroundColor: "#EAF0FF" },
+  formulaHelpText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  tokenToolsRow: { flexDirection: "row-reverse", gap: 6, paddingTop: 8 },
+  tokenTool: { minWidth: 39, alignItems: "center", justifyContent: "center", paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#DDE6F5" },
+  tokenText: { color: "#2457E5", fontSize: 13, fontWeight: "900" },
+  symbolToken: { color: "#2457E5", fontSize: 18, fontWeight: "900", lineHeight: 18 },
+  exampleTokenTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 9, backgroundColor: "#2457E5" },
+  exampleTokenText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
+  suggestionsHeader: { flexDirection: "row-reverse", alignItems: "center", gap: 4, marginTop: 9 },
+  suggestionsLabel: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  formulaToolsRow: { flexDirection: "row-reverse", gap: 7, paddingTop: 6 },
+  formulaTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#EAF0FF", borderWidth: 1, borderColor: "#D8E2FF" },
+  formulaToolText: { color: "#2457E5", fontSize: 11, fontWeight: "800" },
+  sigmaText: { color: "#2457E5", fontSize: 16, fontWeight: "900", lineHeight: 17 },
+  operatorText: { color: "#2457E5", fontSize: 16, fontWeight: "900", lineHeight: 17 },
+  toolsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 6, marginBottom: 10 },
+  analysisToolsRow: { flexDirection: "row-reverse", gap: 6, paddingBottom: 10 },
+  analysisTool: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  analysisToolText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
+  toolButton: { flexDirection: "row-reverse", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E3EAF5" },
+  activeToolButton: { backgroundColor: "#E9EEFF", borderColor: "#BFD0FF" },
+  toolText: { color: "#2457E5", fontSize: 11, fontWeight: "700" },
   clearText: { color: "#C24141" },
-  tipPill: { flexDirection: "row-reverse", alignItems: "center", gap: 4, marginRight: "auto" },
-  tipText: { color: "#64748B", fontSize: 11, fontWeight: "600" },
-  sheetCard: { flex: 1, minHeight: 310, overflow: "hidden", backgroundColor: "#FFFFFF", borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: "#DDE6F5" },
-  sheetTopline: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 13, paddingVertical: 10, backgroundColor: "#FAFBFF", borderBottomWidth: 1, borderColor: "#E8EDF6" },
-  sheetTitleGroup: { flexDirection: "row-reverse", alignItems: "center", gap: 7 },
+  formatCard: { marginBottom: 10, padding: 12, borderRadius: 15, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  chartCard: { marginBottom: 10, padding: 12, borderRadius: 15, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
+  chartHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  chartTitle: { color: "#13213A", fontSize: 13, fontWeight: "800", textAlign: "right" },
+  chartSubtitle: { color: "#64748B", fontSize: 10, fontWeight: "600", textAlign: "right", marginTop: 2 },
+  chartTypeSwitch: { flexDirection: "row-reverse", gap: 4 },
+  chartTypeButton: { width: 32, height: 29, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: "#F3F6FB" },
+  activeChartTypeButton: { backgroundColor: "#E9EEFF", borderWidth: 1, borderColor: "#BFD0FF" },
+  emptyChartText: { paddingVertical: 18, color: "#64748B", fontSize: 11, fontWeight: "600", textAlign: "center" },
+  formatHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  formatTitle: { color: "#13213A", fontSize: 13, fontWeight: "800" },
+  clearFormatButton: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7, backgroundColor: "#FFF3F3" },
+  clearFormatText: { color: "#C24141", fontSize: 10, fontWeight: "800" },
+  formatLabel: { marginTop: 5, marginBottom: 6, color: "#64748B", fontSize: 10, fontWeight: "800", textAlign: "right" },
+  formatOptions: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 6 },
+  formatChip: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 8, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#E3EAF5" },
+  activeFormatChip: { backgroundColor: "#E9EEFF", borderColor: "#2457E5" },
+  formatChipText: { color: "#64748B", fontSize: 10, fontWeight: "700" },
+  activeFormatChipText: { color: "#2457E5", fontWeight: "900" },
+  colorOptions: { flexDirection: "row-reverse", gap: 9 },
+  colorSwatch: { width: 28, height: 28, alignItems: "center", justifyContent: "center", borderRadius: 9, borderWidth: 1, borderColor: "#C8D4E5" },
+  activeColorSwatch: { borderWidth: 2, borderColor: "#2457E5" },
+  sheetCard: { flex: 1, minHeight: 200, overflow: "hidden", backgroundColor: "#FFFFFF", borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: "#DDE6F5" },
+  sheetTopline: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingVertical: 9, backgroundColor: "#FAFBFF", borderBottomWidth: 1, borderColor: "#E8EDF6" },
+  sheetTitleGroup: { flexDirection: "row-reverse", alignItems: "center", gap: 6, flex: 1 },
   activeSheetDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#2457E5" },
-  sheetTitle: { color: "#13213A", fontSize: 13, fontWeight: "800" },
-  sheetHint: { maxWidth: 180, color: "#7A879B", fontSize: 10, fontWeight: "500", textAlign: "left" },
+  sheetTitle: { color: "#13213A", fontSize: 12, fontWeight: "800" },
+  frozenPill: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, backgroundColor: "#F0F4FF" },
+  frozenPillText: { color: "#64748B", fontSize: 9, fontWeight: "700" },
+  sheetHint: { maxWidth: 150, color: "#7A879B", fontSize: 9, fontWeight: "500", textAlign: "left" },
   gridScrollContent: { paddingBottom: 2 },
   headerRow: { flexDirection: "row" },
-  cornerCell: { width: 37, height: 34, backgroundColor: "#F1F5FB", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#DDE6F5" },
-  columnHeader: { width: 78, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: "#F1F5FB", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#DDE6F5" },
+  cornerCell: { width: 37, height: 33, backgroundColor: "#F1F5FB", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#DDE6F5" },
+  columnHeader: { width: 78, height: 33, alignItems: "center", justifyContent: "center", backgroundColor: "#F1F5FB", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#DDE6F5" },
   columnHeaderText: { color: "#53627A", fontSize: 12, fontWeight: "800" },
   gridRow: { flexDirection: "row" },
-  rowHeader: { width: 37, height: 43, alignItems: "center", justifyContent: "center", backgroundColor: "#F8FAFD", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
+  rowHeader: { width: 37, height: 42, alignItems: "center", justifyContent: "center", backgroundColor: "#F8FAFD", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
   rowHeaderText: { color: "#708098", fontSize: 11, fontWeight: "700" },
-  cell: { width: 78, height: 43, paddingHorizontal: 7, alignItems: "flex-end", justifyContent: "center", backgroundColor: "#FFFFFF", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
-  selectedCell: { backgroundColor: "#EEF2FF", borderWidth: 2, borderColor: "#2457E5", marginLeft: -1, marginTop: -1 },
-  cellPressed: { backgroundColor: "#F4F7FF" },
+  cell: { width: DEFAULT_COLUMN_WIDTH, height: 42, paddingHorizontal: 7, alignItems: "flex-end", justifyContent: "center", backgroundColor: "#FFFFFF", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
+  rangeCell: { backgroundColor: "#EAF0FF", borderColor: "#8EACFF" },
+  selectedCell: { borderWidth: 2, borderColor: "#2457E5", marginLeft: -1, marginTop: -1 },
+  cellPressed: { opacity: 0.72 },
   cellText: { width: "100%", color: "#24344F", fontSize: 12, fontWeight: "600", textAlign: "right" },
   selectedCellText: { color: "#1D4ED8" },
-  sheetTabsBar: { minHeight: 47, flexDirection: "row-reverse", alignItems: "center", gap: 7, paddingHorizontal: 8, borderTopWidth: 1, borderColor: "#E8EDF6", backgroundColor: "#FAFBFF" },
+  sheetTabsBar: { minHeight: 46, flexDirection: "row-reverse", alignItems: "center", gap: 7, paddingHorizontal: 8, borderTopWidth: 1, borderColor: "#E8EDF6", backgroundColor: "#FAFBFF" },
   tabsList: { flexDirection: "row-reverse", alignItems: "center", gap: 6, paddingVertical: 6 },
   sheetTab: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 8 },
   activeSheetTab: { backgroundColor: "#E9EEFF" },
   sheetTabText: { color: "#71809A", fontSize: 11, fontWeight: "700" },
   activeSheetTabText: { color: "#2457E5" },
   addSheetButton: { width: 31, height: 31, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: "#E9EEFF" },
-  bottomBar: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", minHeight: 52, paddingHorizontal: 3 },
-  bottomInfo: { flexDirection: "row-reverse", alignItems: "center", gap: 5, flex: 1 },
-  bottomInfoText: { flexShrink: 1, color: "#64748B", fontSize: 11, fontWeight: "500", textAlign: "right" },
-  cellCounter: { paddingHorizontal: 9, paddingVertical: 5, backgroundColor: "#E9EEFF", borderRadius: 8 },
-  cellCounterText: { color: "#2457E5", fontSize: 11, fontWeight: "800" },
+  statusBar: { flexDirection: "row-reverse", alignItems: "center", minHeight: 45, paddingHorizontal: 4 },
+  statusItem: { flexDirection: "row-reverse", alignItems: "center", gap: 4, flex: 1 },
+  statusText: { color: "#64748B", fontSize: 10, fontWeight: "700" },
+  statusValue: { color: "#13213A", fontSize: 11, fontWeight: "900" },
+  statusDivider: { width: 1, height: 20, marginHorizontal: 7, backgroundColor: "#DDE6F5" },
+  pressed: { transform: [{ scale: 0.97 }], opacity: 0.9 },
+  toolPressed: { opacity: 0.68 },
 });

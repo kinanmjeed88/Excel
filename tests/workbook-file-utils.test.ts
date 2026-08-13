@@ -13,6 +13,9 @@ const sheet: PortableSheet = {
   rowCount: 3,
   columnCount: 2,
   cells: { A1: "اسم", B1: "القيمة", A2: "قلم, أزرق", B2: "8", B3: "=B2*2" },
+  cellFormats: {},
+  mergedCells: [{ start: "A1", end: "B1" }],
+  columnWidths: { A: 120, B: 92 },
 };
 
 describe("تحويل ملفات المصنف", () => {
@@ -28,6 +31,8 @@ describe("تحويل ملفات المصنف", () => {
     expect(imported.sheets).toHaveLength(1);
     expect(imported.sheets[0]).toMatchObject({ name: "المبيعات" });
     expect(imported.sheets[0].cells).toMatchObject({ A1: "اسم", A2: "قلم, أزرق", B3: "=B2*2" });
+    expect(imported.sheets[0].mergedCells).toEqual([{ start: "A1", end: "B1" }]);
+    expect(imported.sheets[0].columnWidths).toMatchObject({ A: 120, B: 92 });
   });
 
   it("يستورد ملف CSV إلى ورقة عمل", () => {
