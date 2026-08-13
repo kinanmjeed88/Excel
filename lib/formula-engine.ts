@@ -7,6 +7,17 @@ export type FormulaResult =
 
 const CELL_REFERENCE = /^[A-Z]+[1-9]\d*$/;
 
+const ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
+
+function normalizeArabicNumerals(value: string) {
+  return value
+    .replace(/[٠-٩]/g, (digit) => String(ARABIC_DIGITS.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String(PERSIAN_DIGITS.indexOf(digit)))
+    .replace(/٫/g, ".")
+    .replace(/٬/g, ",");
+}
+
 function columnNumber(label: string) {
   return label.split("").reduce((value, char) => value * 26 + char.charCodeAt(0) - 64, 0);
 }
@@ -101,9 +112,10 @@ export function evaluateCell(
 ): FormulaResult {
   const normalizedAddress = address.toUpperCase();
   const raw = (cells[normalizedAddress] ?? "").trim();
+  const numericRaw = normalizeArabicNumerals(raw);
   if (!raw) return { kind: "number", value: 0, display: "0" };
   if (!raw.startsWith("=")) {
-    const numeric = Number(raw.replace(/,/g, ""));
+    const numeric = Number(numericRaw.replace(/,/g, ""));
     return Number.isFinite(numeric) && raw !== ""
       ? { kind: "number", value: numeric, display: formatNumber(numeric) }
       : { kind: "text", display: raw };
@@ -116,7 +128,7 @@ export function evaluateCell(
   nextVisiting.add(normalizedAddress);
 
   try {
-    let expression = raw.slice(1).toUpperCase();
+    let expression = normalizeArabicNumerals(raw.slice(1)).toUpperCase();
     expression = expression.replace(/\b(SUM|AVG|AVERAGE)\(([A-Z]+\d+):([A-Z]+\d+)\)/g, (_, fn, start, end) => {
       const values = rangeReferences(start, end).map((reference) => {
         const result = evaluateCell(reference, cells, nextVisiting);

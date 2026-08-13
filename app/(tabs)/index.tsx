@@ -72,6 +72,7 @@ export default function HomeScreen() {
   const [hasLoaded, setHasLoaded] = useState(false);
   const [lastWorkbook, setLastWorkbook] = useState<Workbook | null>(null);
   const [isFileAction, setIsFileAction] = useState(false);
+  const [showGuide, setShowGuide] = useState(true);
 
   const activeSheet = useMemo(
     () => workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0],
@@ -167,6 +168,23 @@ export default function HomeScreen() {
   function insertFormula(template: string, label: string) {
     setDraft(template);
     setSavedMessage(`أُدرجت صيغة ${label}؛ عدّل مراجع الخلايا ثم اضغط التأكيد`);
+  }
+
+  function loadGradeExample() {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      cells: {
+        ...sheet.cells,
+        A2: "أحمد محمد",
+        B2: "٥",
+        C2: "٥",
+        D2: "=B2+C2",
+      },
+    }));
+    setSelectedCell("D2");
+    setDraft("=B2+C2");
+    setSavedMessage("تمت إضافة مثال الدرجات؛ النتيجة في الخلية D2 هي 10");
+    setShowGuide(false);
   }
 
   function changeTableSize(axis: "rowCount" | "columnCount") {
@@ -274,6 +292,37 @@ export default function HomeScreen() {
             <View style={styles.headerBadgeDot} />
             <Text style={styles.headerBadgeText}>{hasLoaded ? "محفوظ محلياً" : "جارٍ التحميل"}</Text>
           </View>
+        </View>
+
+        <View style={styles.guideCard}>
+          <Pressable
+            accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول"
+            onPress={() => setShowGuide((visible) => !visible)}
+            style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}
+          >
+            <View style={styles.guideHeading}>
+              <View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View>
+              <View>
+                <Text style={styles.guideTitle}>كيف أحسب مجموع درجتين؟</Text>
+                <Text style={styles.guideSubtitle}>مثال واضح: أحمد محمد، ٥ + ٥ = 10</Text>
+              </View>
+            </View>
+            <MaterialIcons name={showGuide ? "expand-less" : "expand-more"} size={22} color="#2457E5" />
+          </Pressable>
+          {showGuide && (
+            <View style={styles.guideBody}>
+              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>١.</Text> اكتب الاسم «أحمد محمد» في الخلية A2.</Text>
+              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>٢.</Text> اكتب ٥ في B2، ثم اكتب ٥ في C2.</Text>
+              <Text style={styles.guideStep}><Text style={styles.guideStepNumber}>٣.</Text> اختر D2، واكتب <Text style={styles.formulaExample}>=B2+C2</Text> في شريط الصيغ ثم اضغط ✓.</Text>
+              <View style={styles.guideResultRow}>
+                <Text style={styles.guideResultText}>ستظهر النتيجة: <Text style={styles.guideResultValue}>10</Text></Text>
+                <Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}>
+                  <MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" />
+                  <Text style={styles.loadExampleText}>جرّب المثال</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </View>
 
         <View style={styles.fileActionsRow}>
@@ -423,6 +472,21 @@ const styles = StyleSheet.create({
   headerBadge: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 99, backgroundColor: "#E8F7F0" },
   headerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#16865B" },
   headerBadgeText: { color: "#16865B", fontSize: 11, fontWeight: "700" },
+  guideCard: { marginBottom: 12, padding: 12, borderRadius: 16, backgroundColor: "#F0F4FF", borderWidth: 1, borderColor: "#D8E2FF" },
+  guideHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between" },
+  guideHeading: { flexDirection: "row-reverse", alignItems: "center", gap: 9, flex: 1 },
+  guideIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: "#FFFFFF" },
+  guideTitle: { color: "#13213A", fontSize: 14, fontWeight: "800", lineHeight: 20, textAlign: "right" },
+  guideSubtitle: { color: "#64748B", fontSize: 11, fontWeight: "600", lineHeight: 17, textAlign: "right" },
+  guideBody: { marginTop: 10, gap: 5 },
+  guideStep: { color: "#40516D", fontSize: 12, fontWeight: "600", lineHeight: 20, textAlign: "right" },
+  guideStepNumber: { color: "#2457E5", fontWeight: "900" },
+  formulaExample: { color: "#2457E5", fontWeight: "900" },
+  guideResultRow: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginTop: 5 },
+  guideResultText: { color: "#40516D", fontSize: 12, fontWeight: "700" },
+  guideResultValue: { color: "#16865B", fontSize: 15, fontWeight: "900" },
+  loadExampleButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 9, backgroundColor: "#2457E5" },
+  loadExampleText: { color: "#FFFFFF", fontSize: 11, fontWeight: "800" },
   fileActionsRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, marginBottom: 12 },
   fileActionButton: { flexDirection: "row-reverse", alignItems: "center", gap: 5, minHeight: 36, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DDE6F5" },
   fileActionPressed: { opacity: 0.55, transform: [{ scale: 0.98 }] },

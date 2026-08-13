@@ -19,4 +19,10 @@ describe("محرك الصيغ", () => {
     expect(evaluateCell("A1", { A1: "=4/0" })).toMatchObject({ kind: "error", display: "#خطأ" });
     expect(evaluateCell("A1", { A1: "=B1+1", B1: "=A1+1" })).toMatchObject({ kind: "error", display: "#خطأ" });
   });
+
+  it("يحسب مثال الدرجات بالأرقام العربية: ٥ + ٥ = 10", () => {
+    const cells = { A2: "أحمد محمد", B2: "٥", C2: "٥", D2: "=B2+C2", E2: "=B٢+C٢" };
+    expect(evaluateCell("D2", cells)).toMatchObject({ kind: "number", value: 10, display: "10" });
+    expect(evaluateCell("E2", cells)).toMatchObject({ kind: "number", value: 10, display: "10" });
+  });
 });
