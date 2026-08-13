@@ -1,0 +1,72 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "assets/**"
+      - "components/**"
+      - "lib/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "app.config.ts"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build debug-signed Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EXPO_NO_GIT_STATUS: "1"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run type checks and unit tests
+        run: |
+          pnpm check
+          pnpm test
+
+      - name: Generate Android project
+        run: pnpm exec expo prebuild --platform android --clean --no-install
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jadwali-apk-${{ github.run_number }}
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
