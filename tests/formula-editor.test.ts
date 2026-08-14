@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { appendFormulaDraftToken, buildRelativeFormula, getRelativeFormulaReferences } from "../lib/formula-editor";
+import { appendFormulaDraftToken, buildRelativeFormula, getFormulaFillTargets, getRelativeFormulaReferences, translateFormulaForFill } from "../lib/formula-editor";
 import { displayCellValue } from "../lib/formula-engine";
 
 describe("appendFormulaDraftToken", () => {
@@ -34,6 +34,17 @@ describe("appendFormulaDraftToken", () => {
   it("يبني مراجع الصف الأول عند تحرير خلية في هذا الصف", () => {
     expect(getRelativeFormulaReferences("D1")).toEqual({ row: 1, firstReference: "B1", secondReference: "C1" });
     expect(buildRelativeFormula("D1", "add")).toBe("=B1+C1");
+  });
+
+  it("يحوّل مراجع الصيغة إلى الصفوف المستهدفة عند التعبئة بالسحب", () => {
+    expect(getFormulaFillTargets("D2", "D4")).toEqual(["D3", "D4"]);
+    expect(translateFormulaForFill("=B2+C2", "D2", "D3")).toBe("=B3+C3");
+    expect(translateFormulaForFill("=SUM(B2:C2)", "D2", "D4")).toBe("=SUM(B4:C4)");
+  });
+
+  it("يدعم التعبئة إلى خلية مجاورة أفقياً دون تثبيت العمود الأصلي", () => {
+    expect(getFormulaFillTargets("D2", "F2")).toEqual(["E2", "F2"]);
+    expect(translateFormulaForFill("=B2+C2", "D2", "E2")).toBe("=C2+D2");
   });
 
   it("لا يلحق مرجعاً جديداً بصيغة مكتملة بشكل غير صالح", () => {

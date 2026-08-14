@@ -3,12 +3,12 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Line, Path, Rect, Text as SvgText } from "react-native-svg";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { appendFormulaDraftToken, buildRelativeFormula, getRelativeFormulaReferences, type RelativeFormulaPreset } from "@/lib/formula-editor";
+import { appendFormulaDraftToken, buildRelativeFormula, getFormulaFillTargets, getRelativeFormulaReferences, translateFormulaForFill, type RelativeFormulaPreset } from "@/lib/formula-editor";
 import { displayCellValue } from "@/lib/formula-engine";
 import {
   createEmptySheet,
@@ -116,6 +116,7 @@ export default function HomeScreen() {
   const verticalGridRef = useRef<ScrollView>(null);
   const pageScrollRef = useRef<ScrollView>(null);
   const rangeStartRef = useRef<string | null>(null);
+  const fillSourceRef = useRef<string | null>(null);
 
   const activeSheet = useMemo(
     () => workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0],
@@ -126,6 +127,7 @@ export default function HomeScreen() {
   const selectedFormat = activeSheet.cellFormats[selectedCell] ?? {};
   const formulaReferences = useMemo(() => getRelativeFormulaReferences(selectedCell), [selectedCell]);
   const additionFormula = useMemo(() => buildRelativeFormula(selectedCell, "add"), [selectedCell]);
+  const selectedFormula = useMemo(() => activeSheet.cells[selectedCell]?.trim() ?? "", [activeSheet.cells, selectedCell]);
   const rangeSummary = useMemo(() => (selectionRange ? rangeNumericSummary(activeSheet, selectionRange) : null), [activeSheet, selectionRange]);
   const chartData = useMemo(() => {
     if (!selectionRange) return [];
@@ -193,6 +195,85 @@ export default function HomeScreen() {
     [activeSheet, columns, isRangeSelecting],
   );
 
+  const updateActiveSheet = useCallback((updater: (sheet: SpreadsheetSheet) => SpreadsheetSheet) => {
+    setLastWorkbook(workbook);
+    setWorkbook((current) => ({
+      ...current,
+      sheets: current.sheets.map((sheet) => (sheet.id === current.activeSheetId ? updater(sheet) : sheet)),
+    }));
+  }, [workbook]);
+
+  const getFillTargetAddress = useCallback((sourceAddress: string, dx: number, dy: number) => {
+    const source = parseAddress(sourceAddress);
+    if (!source) return sourceAddress;
+    if (Math.abs(dy) >= Math.abs(dx)) {
+      const row = Math.max(0, Math.min(activeSheet.rowCount - 1, source.row + Math.round(dy / 42)));
+      return `${columns[source.column]}${row + 1}`;
+    }
+    const column = Math.max(0, Math.min(activeSheet.columnCount - 1, source.column + Math.round(dx / DEFAULT_COLUMN_WIDTH)));
+    return `${columns[column]}${source.row + 1}`;
+  }, [activeSheet.columnCount, activeSheet.rowCount, columns]);
+
+  const applyFormulaFill = useCallback((sourceAddress: string, targetAddress: string) => {
+    const sourceFormula = activeSheet.cells[sourceAddress]?.trim() ?? "";
+    const targets = getFormulaFillTargets(sourceAddress, targetAddress);
+    if (!sourceFormula.startsWith("=")) {
+      setSavedMessage("احفظ صيغة في الخلية أولاً، ثم اسحب مقبض التعبئة");
+      return;
+    }
+    if (!targets.length) {
+      setSavedMessage("اسحب المقبض إلى خلية مجاورة لتعبئة الصيغة");
+      return;
+    }
+
+    const fillableTargets = targets.filter((address) => !isMergedChild(activeSheet, address));
+    if (!fillableTargets.length) {
+      setSavedMessage("الخلايا المستهدفة مدمجة ولا يمكن تعبئتها تلقائياً");
+      return;
+    }
+    updateActiveSheet((sheet) => {
+      const cells = { ...sheet.cells };
+      fillableTargets.forEach((address) => {
+        cells[address] = translateFormulaForFill(sourceFormula, sourceAddress, address);
+      });
+      return { ...sheet, cells };
+    });
+    const finalAddress = fillableTargets[fillableTargets.length - 1];
+    setSelectionRange({ start: sourceAddress, end: finalAddress });
+    setSavedMessage(`تمت تعبئة الصيغة من ${sourceAddress} إلى ${finalAddress} (${fillableTargets.length} خلية)`);
+  }, [activeSheet, updateActiveSheet]);
+
+  const fillResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => selectedFormula.startsWith("="),
+        onMoveShouldSetPanResponder: () => selectedFormula.startsWith("="),
+        onPanResponderGrant: () => {
+          fillSourceRef.current = selectedCell;
+          setSelectionRange({ start: selectedCell, end: selectedCell });
+          setIsRangeSelecting(false);
+          setSavedMessage("اسحب المقبض إلى الخلايا المجاورة لتعبئة الصيغة");
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const sourceAddress = fillSourceRef.current;
+          if (!sourceAddress) return;
+          setSelectionRange({ start: sourceAddress, end: getFillTargetAddress(sourceAddress, gestureState.dx, gestureState.dy) });
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          const sourceAddress = fillSourceRef.current;
+          fillSourceRef.current = null;
+          if (!sourceAddress) return;
+          applyFormulaFill(sourceAddress, getFillTargetAddress(sourceAddress, gestureState.dx, gestureState.dy));
+        },
+        onPanResponderTerminate: () => {
+          fillSourceRef.current = null;
+          setSelectionRange(null);
+          setSavedMessage("تم إلغاء تعبئة الصيغة");
+        },
+      }),
+    [applyFormulaFill, getFillTargetAddress, selectedCell, selectedFormula],
+  );
+
   useEffect(() => {
     let isActive = true;
     AsyncStorage.getItem(WORKBOOK_KEY)
@@ -215,14 +296,6 @@ export default function HomeScreen() {
     if (!hasLoaded) return;
     AsyncStorage.setItem(WORKBOOK_KEY, JSON.stringify(workbook)).catch(() => setSavedMessage("تعذر حفظ التغييرات محلياً"));
   }, [hasLoaded, workbook]);
-
-  function updateActiveSheet(updater: (sheet: SpreadsheetSheet) => SpreadsheetSheet) {
-    setLastWorkbook(workbook);
-    setWorkbook((current) => ({
-      ...current,
-      sheets: current.sheets.map((sheet) => (sheet.id === current.activeSheetId ? updater(sheet) : sheet)),
-    }));
-  }
 
   function selectToolbarSection(section: ToolbarSection) {
     setActiveToolbarSection(section);
@@ -583,7 +656,7 @@ export default function HomeScreen() {
             <Text style={styles.formulaHintText}>صف {formulaReferences.row} · جمع هذا الصف: <Text style={styles.formulaExample}>{additionFormula}</Text></Text>
             <Pressable onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.formulaHelpButton, pressed && styles.toolPressed]}><MaterialIcons name="help-outline" size={15} color="#2457E5" /><Text style={styles.formulaHelpText}>شرح</Text></Pressable>
           </View>
-          <Text style={styles.formulaWorkflow}>من شريط «صيغ»: اضغط الدالة لتطبيقها فوراً على {selectedCell}، أو استخدم المراجع لبناء صيغة يدوية ثم احفظها.</Text>
+          <Text style={styles.formulaWorkflow}>{selectedFormula.startsWith("=") ? "اسحب المقبض الأزرق في زاوية الخلية المحددة لتعبئة الصيغة في الخلايا المجاورة مع تعديل المراجع تلقائياً." : "من شريط «صيغ»: اضغط الدالة لتطبيقها فوراً على هذه الخلية، أو استخدم المراجع لبناء صيغة يدوية ثم احفظها."}</Text>
         </View>
 
         <View style={styles.guideCard}>
@@ -610,7 +683,7 @@ export default function HomeScreen() {
             <View>
               <View style={styles.headerRow}><View style={styles.cornerCell} />{columns.map((column) => <View key={column} style={[styles.columnHeader, { width: getColumnWidth(activeSheet, column) }]}><Text style={styles.columnHeaderText}>{column}</Text></View>)}</View>
               <ScrollView ref={verticalGridRef} showsVerticalScrollIndicator={false} nestedScrollEnabled>
-                <View {...rangeResponder.panHandlers}>{rows.map((row) => <View key={row} style={styles.gridRow}><View style={styles.rowHeader}><Text style={styles.rowHeaderText}>{row}</Text></View>{columns.map((column) => { const address = `${column}${row}`; const selected = address === selectedCell; const inRange = Boolean(selectionRange && isAddressInRange(address, selectionRange)); const merged = getMergedRangeForAddress(activeSheet, address); if (isMergedChild(activeSheet, address)) return null; const bounds = merged ? getRangeBounds(merged) : null; const mergedWidth = bounds ? columns.slice(bounds.startColumn, bounds.endColumn + 1).reduce((sum, item) => sum + getColumnWidth(activeSheet, item), 0) : getColumnWidth(activeSheet, column); const cellStyle = activeSheet.cellFormats[address]; return <Pressable key={address} accessibilityLabel={`الخلية ${address}`} onLongPress={startRangeSelection} onPress={() => selectCell(address)} style={({ pressed }) => [styles.cell, { width: mergedWidth }, cellStyle?.backgroundColor ? { backgroundColor: cellStyle.backgroundColor } : null, inRange && styles.rangeCell, selected && styles.selectedCell, pressed && styles.cellPressed]}><Text numberOfLines={1} style={[styles.cellText, cellStyle?.textColor ? { color: cellStyle.textColor } : null, selected && styles.selectedCellText]}>{formatCellDisplay(address, activeSheet)}</Text></Pressable>; })}</View>)}</View>
+                <View {...rangeResponder.panHandlers}>{rows.map((row) => <View key={row} style={styles.gridRow}><View style={styles.rowHeader}><Text style={styles.rowHeaderText}>{row}</Text></View>{columns.map((column) => { const address = `${column}${row}`; const selected = address === selectedCell; const inRange = Boolean(selectionRange && isAddressInRange(address, selectionRange)); const merged = getMergedRangeForAddress(activeSheet, address); if (isMergedChild(activeSheet, address)) return null; const bounds = merged ? getRangeBounds(merged) : null; const mergedWidth = bounds ? columns.slice(bounds.startColumn, bounds.endColumn + 1).reduce((sum, item) => sum + getColumnWidth(activeSheet, item), 0) : getColumnWidth(activeSheet, column); const cellStyle = activeSheet.cellFormats[address]; const hasFillHandle = selected && selectedFormula.startsWith("="); return <Pressable key={address} accessibilityLabel={`الخلية ${address}`} onLongPress={startRangeSelection} onPress={() => selectCell(address)} style={({ pressed }) => [styles.cell, { width: mergedWidth }, cellStyle?.backgroundColor ? { backgroundColor: cellStyle.backgroundColor } : null, inRange && styles.rangeCell, selected && styles.selectedCell, pressed && styles.cellPressed]}><Text numberOfLines={1} style={[styles.cellText, cellStyle?.textColor ? { color: cellStyle.textColor } : null, selected && styles.selectedCellText]}>{formatCellDisplay(address, activeSheet)}</Text>{hasFillHandle && <View accessible accessibilityLabel="مقبض تعبئة الصيغة؛ اسحبه إلى خلية مجاورة" style={styles.fillHandle} {...fillResponder.panHandlers}><MaterialIcons name="drag-indicator" size={12} color="#FFFFFF" /></View>}</Pressable>; })}</View>)}</View>
               </ScrollView>
             </View>
           </ScrollView>
@@ -761,6 +834,7 @@ const styles = StyleSheet.create({
   cell: { width: DEFAULT_COLUMN_WIDTH, height: 42, paddingHorizontal: 7, alignItems: "flex-end", justifyContent: "center", backgroundColor: "#FFFFFF", borderRightWidth: 1, borderBottomWidth: 1, borderColor: "#E2E8F2" },
   rangeCell: { backgroundColor: "#EAF0FF", borderColor: "#8EACFF" },
   selectedCell: { backgroundColor: "#EAF0FF", borderWidth: 2, borderColor: "#2457E5", marginLeft: -1, marginTop: -1, elevation: 2 },
+  fillHandle: { position: "absolute", left: -7, bottom: -7, width: 18, height: 18, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: "#2457E5", borderWidth: 2, borderColor: "#FFFFFF", elevation: 4 },
   cellPressed: { opacity: 0.72 },
   cellText: { width: "100%", color: "#24344F", fontSize: 12, fontWeight: "600", textAlign: "right" },
   selectedCellText: { color: "#1D4ED8" },
