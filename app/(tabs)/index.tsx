@@ -168,7 +168,7 @@ function useAdaptiveStyles() {
     };
   }, [colors, isDark]);
 }
-const GUIDE_ILLUSTRATION_URL = "/manus-storage/jadwali-guide-illustration_cb33c526.png";
+const GUIDE_ILLUSTRATION_URL = "/manus-storage/jadwali-guide-illustration-v2_3099b77d.png";
 // النسخة المدمجة في التطبيق (مضمنة في أصول APK)، تُستخدم تلقائياً في التطبيق المستقل بعيداً عن خادم منصة Manus.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const GuideIllustrationAsset = require("@/assets/images/guide-illustration.png");
