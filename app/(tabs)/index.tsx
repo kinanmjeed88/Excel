@@ -4,7 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, Image, KeyboardAvoidingView, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Line, Path, Rect, Text as SvgText } from "react-native-svg";
 
 import { ScreenContainer } from "@/components/screen-container";
@@ -35,6 +35,7 @@ import {
 import { exportSheetToCsv, exportWorkbookToXlsx, importSpreadsheetFile } from "@/lib/workbook-file-utils";
 
 const WORKBOOK_KEY = "jadwali.workbook.v1";
+const GUIDE_ILLUSTRATION_URL = "/manus-storage/jadwali-guide-illustration_cb33c526.png";
 const FORMAT_OPTIONS: CellNumberFormat[] = ["general", "currency", "percent", "decimal"];
 const COLOR_OPTIONS = ["#FFFFFF", "#FFF7D6", "#E8F7F0", "#E9EEFF", "#FDECEC"];
 const TOOLBAR_SECTIONS = [
@@ -661,7 +662,11 @@ export default function HomeScreen() {
 
         <View style={styles.guideCard}>
           <Pressable accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول" onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}>
-            <View style={styles.guideHeading}><View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View><View><Text style={styles.guideTitle}>كيف أحسب مجموع هذا الصف؟</Text><Text style={styles.guideSubtitle}>المراجع: {formulaReferences.firstReference} و{formulaReferences.secondReference}</Text></View></View>
+            <View style={styles.guideHeading}>
+              <View style={styles.guideVisualFrame}><Image source={{ uri: GUIDE_ILLUSTRATION_URL }} resizeMode="contain" style={styles.guideIllustration} /></View>
+              <View style={styles.guideIcon}><MaterialIcons name="school" size={18} color="#2457E5" /></View>
+              <View style={styles.guideCopy}><Text style={styles.guideTitle}>كيف أحسب مجموع هذا الصف؟</Text><Text style={styles.guideSubtitle}>المراجع: {formulaReferences.firstReference} و{formulaReferences.secondReference}</Text></View>
+            </View>
             <MaterialIcons name={showGuide ? "expand-less" : "expand-more"} size={22} color="#2457E5" />
           </Pressable>
           {showGuide && <View style={styles.guideBody}><Text style={styles.guideStep}>١. في الصف {formulaReferences.row} اكتب القيم في {formulaReferences.firstReference} و{formulaReferences.secondReference}.</Text><Text style={styles.guideStep}>٢. حدّد خلية النتيجة {selectedCell}، ثم اختر «صيغ» واضغط «جمع» لتطبيق <Text style={styles.formulaExample}>{additionFormula}</Text>.</Text><View style={styles.guideResultRow}><Text style={styles.guideResultText}>لن تُستخدم مراجع أي صف آخر.</Text><Pressable onPress={loadGradeExample} style={({ pressed }) => [styles.loadExampleButton, pressed && styles.pressed]}><MaterialIcons name="play-circle-outline" size={17} color="#FFFFFF" /><Text style={styles.loadExampleText}>جرّب المثال</Text></Pressable></View></View>}
@@ -768,6 +773,9 @@ const styles = StyleSheet.create({
   formulaHelpButton: { flexDirection: "row-reverse", alignItems: "center", gap: 3, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 8, backgroundColor: "#EAF0FF" },
   formulaHelpText: { color: "#2457E5", fontSize: 10, fontWeight: "800" },
   formulaWorkflow: { marginTop: 7, color: "#64748B", fontSize: 10, fontWeight: "600", lineHeight: 16, textAlign: "right" },
+  guideVisualFrame: { width: 68, height: 48, alignItems: "center", justifyContent: "center", overflow: "hidden", borderRadius: 12, backgroundColor: "#EDF3FF", borderWidth: 1, borderColor: "#D8E4FF" },
+  guideIllustration: { width: "100%", height: "100%" },
+  guideCopy: { flex: 1 },
   formulaToolsScroller: { marginHorizontal: -2 },
   tokenToolsRow: { flexDirection: "row-reverse", gap: 6, paddingHorizontal: 2, paddingTop: 8, paddingBottom: 2 },
   tokenTool: { minWidth: 39, alignItems: "center", justifyContent: "center", paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: "#F7F9FE", borderWidth: 1, borderColor: "#DDE6F5" },
