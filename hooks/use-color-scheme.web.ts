@@ -11,11 +11,18 @@ export function useColorScheme() {
     setHasHydrated(true);
   }, []);
 
-  const colorScheme = useRNColorScheme();
+  // على الويب، نتبع وضع العرض المختار يدوياً (dataset.theme) أو النظام.
+  const rootTheme =
+    typeof document !== "undefined"
+      ? (document.documentElement.dataset.theme as "light" | "dark" | undefined)
+      : undefined;
+
+  const systemScheme = useRNColorScheme();
+  const colorScheme = rootTheme === "dark" ? ("dark" as const) : (systemScheme ?? "light");
 
   if (hasHydrated) {
     return colorScheme;
   }
 
-  return "light";
+  return rootTheme ?? "light";
 }
