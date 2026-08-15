@@ -169,6 +169,10 @@ function useAdaptiveStyles() {
   }, [colors, isDark]);
 }
 const GUIDE_ILLUSTRATION_URL = "/manus-storage/jadwali-guide-illustration_cb33c526.png";
+// النسخة المدمجة في التطبيق (مضمنة في أصول APK)، تُستخدم تلقائياً في التطبيق المستقل بعيداً عن خادم منصة Manus.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const GuideIllustrationAsset = require("@/assets/images/guide-illustration.png");
+
 const FORMAT_OPTIONS: CellNumberFormat[] = ["general", "currency", "percent", "decimal"];
 const COLOR_OPTIONS = ["#FFFFFF", "#FFF7D6", "#E8F7F0", "#E9EEFF", "#FDECEC"];
 const TOOLBAR_SECTIONS = [
@@ -228,6 +232,13 @@ function parseAddress(value: string) {
 }
 
 export default function HomeScreen() {
+  // إن تعذّر تحميل المسار البعيد على الويب (خارج منصة Manus)، ننتقل إلى النسخة المدمجة.
+  const [illustrationSource, setIllustrationSource] = useState<any>(Platform.OS === "web" ? { uri: GUIDE_ILLUSTRATION_URL } : GuideIllustrationAsset);
+  const illustrationError = useCallback(() => {
+    if (Platform.OS === "web" && illustrationSource?.uri) {
+      setIllustrationSource(GuideIllustrationAsset);
+    }
+  }, [illustrationSource]);
   const [workbook, setWorkbook] = useState<SpreadsheetWorkbook>(createInitialWorkbook);
   const [selectedCell, setSelectedCell] = useState("A1");
   const [draft, setDraft] = useState("");
@@ -804,7 +815,14 @@ export default function HomeScreen() {
         <View style={styles.guideCard}>
           <Pressable accessibilityLabel="فتح أو إغلاق شرح استخدام الجدول" onPress={() => setShowGuide((visible) => !visible)} style={({ pressed }) => [styles.guideHeader, pressed && styles.toolPressed]}>
             <View style={styles.guideHeading}>
-              <View style={styles.guideVisualFrame}><Image source={{ uri: GUIDE_ILLUSTRATION_URL }} resizeMode="contain" style={styles.guideIllustration} /></View>
+              <View style={styles.guideVisualFrame}>
+                <Image
+                  source={illustrationSource}
+                  resizeMode="contain"
+                  style={styles.guideIllustration}
+                  onError={illustrationError}
+                />
+              </View>
               <View style={[styles.guideIcon, adaptive.guideIcon]}><MaterialIcons name="school" size={18} color={adaptive.toolbarPrimaryIcon} /></View>
               <View style={styles.guideCopy}><Text style={styles.guideTitle}>كيف أحسب مجموع هذا الصف؟</Text><Text style={styles.guideSubtitle}>المراجع: {formulaReferences.firstReference} و{formulaReferences.secondReference}</Text></View>
             </View>
